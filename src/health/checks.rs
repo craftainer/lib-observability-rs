@@ -178,3 +178,62 @@ impl HealthCheck for MockHealthCheck {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Real-dependency checks (Database/Redis/S3/Oidc) need a live service
+    // to exercise their success path -- covered against real Postgres/
+    // Redis/Keycloak in tests/integration (see tests/integration/README.md).
+    // What's unit-testable without a network is: MockHealthCheck's own
+    // fixed shape, and the shared ok()/failure() helpers every check
+    // funnels through (`docs/nfrs/0008-health-check-isolation.md` --
+    // failure() never leaks the real error into `detail`).
+
+    #[tokio::test]
+    async fn mock_health_check_is_always_healthy_with_a_mocked_marker() {
+        let check = MockHealthCheck::new("database");
+        assert_eq!(check.name(), "database");
+        let result = check.check().await;
+        assert!(result.healthy);
+        assert_eq!(result.detail.as_deref(), Some("mocked"));
+    }
+
+    #[test]
+    fn ok_helper_reports_healthy_with_no_detail() {
+        let result = ok();
+        assert!(result.healthy);
+        assert!(result.detail.is_none());
+    }
+
+    #[test]
+    fn failure_helper_reports_unhealthy_with_a_fixed_non_leaking_detail() {
+        let result = failure("database", "connection refused: password=hunter2");
+        assert!(!result.healthy);
+        // The real error text must never reach the client -- only the
+        // fixed FAILURE_DETAIL string does (NFR-0015-style redaction).
+        assert_eq!(result.detail.as_deref(), Some(FAILURE_DETAIL));
+        assert!(!result.detail.unwrap().contains("hunter2"));
+    }
+
+    #[tokio::test]
+    async fn redis_health_check_reports_unhealthy_for_an_unreachable_url() {
+        // No network dependency needed: an unroutable address fails fast
+        // (connection refused) rather than hanging.
+        let check = RedisHealthCheck::new("redis://127.0.0.1:1/0".to_string());
+        assert_eq!(check.name(), "redis");
+        let result = check.check().await;
+        assert!(!result.healthy);
+        assert_eq!(result.detail.as_deref(), Some(FAILURE_DETAIL));
+    }
+
+    #[tokio::test]
+    async fn oidc_health_check_reports_unhealthy_for_an_unreachable_issuer() {
+        let check = OidcHealthCheck::new("http://127.0.0.1:1".to_string());
+        assert_eq!(check.name(), "oidc");
+        let result = check.check().await;
+        assert!(!result.healthy);
+        assert_eq!(result.detail.as_deref(), Some(FAILURE_DETAIL));
+    }
+}
