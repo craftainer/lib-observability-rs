@@ -18,4 +18,4 @@ reports a fixed, non-leaking `detail` string on failure (the real error
 goes to `tracing::error!` only) — `docs/nfrs/0008-health-check-
 isolation.md`. Registering a new dependency's check is `impl
 HealthCheck for X { ... }` plus one `registry.register(Box::new(X::
-new(...)))` call in `main.rs::build_health_registry` — no other wiring.
+new(...)))` call in `lib.rs::build_health_registry` — no other wiring.
