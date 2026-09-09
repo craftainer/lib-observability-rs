@@ -45,7 +45,7 @@ impl HealthCheck for DatabaseHealthCheck {
     async fn check(&self) -> HealthCheckResult {
         match self
             .db
-            .execute(Statement::from_string(
+            .execute_raw(Statement::from_string(
                 self.db.get_database_backend(),
                 "SELECT 1",
             ))
