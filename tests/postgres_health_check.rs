@@ -1,8 +1,8 @@
 //! Integration tier: `health::checks::DatabaseHealthCheck` against the
 //! devcontainer stack's real Postgres. The `S3`/`Redis`/`Oidc` checks'
-//! success paths stay deliberately uncovered (`docs/adrs/0010`); the
-//! database check isn't one of those -- Postgres is already this tier's
-//! own dependency, so its `SELECT 1` happy path is covered here.
+//! success paths have their own siblings (`tests/s3_health_check.rs`,
+//! `tests/redis_rate_limiter.rs`, `tests/keycloak_oidc.rs`) -- this file
+//! covers the database check's own `SELECT 1` happy path.
 
 mod common;
 
