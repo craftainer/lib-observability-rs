@@ -183,13 +183,19 @@ impl HealthCheck for MockHealthCheck {
 mod tests {
     use super::*;
 
-    // Real-dependency checks (Database/Redis/S3/Oidc) need a live service
-    // to exercise their success path -- covered against real Postgres/
-    // Redis/Keycloak in tests/integration (see tests/integration/README.md).
-    // What's unit-testable without a network is: MockHealthCheck's own
-    // fixed shape, and the shared ok()/failure() helpers every check
-    // funnels through (`docs/nfrs/0008-health-check-isolation.md` --
-    // failure() never leaks the real error into `detail`).
+    // Real-dependency checks need a live service to exercise their
+    // success path. DatabaseHealthCheck's is covered against real
+    // Postgres in tests/postgres_health_check.rs -- Postgres is already
+    // this tier's own dependency. Redis/S3/Oidc's happy paths stay
+    // deliberately uncovered (`docs/adrs/0010`): reaching them means
+    // going through `lib::build_health_registry`'s real-backend wiring,
+    // which also calls `std::process::exit`-adjacent `expect`s on
+    // failure. What's unit-testable without a network here is:
+    // MockHealthCheck's own fixed shape, the shared ok()/failure()
+    // helpers every check funnels through (`docs/nfrs/0008-health-check-
+    // isolation.md` -- failure() never leaks the real error into
+    // `detail`), and Redis/Oidc's own *failure* paths (no live service
+    // needed for those -- see below).
 
     #[tokio::test]
     async fn mock_health_check_is_always_healthy_with_a_mocked_marker() {

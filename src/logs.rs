@@ -103,4 +103,24 @@ mod tests {
             "a layer should be built once OTEL_EXPORTER_OTLP_ENDPOINT is set"
         );
     }
+
+    #[test]
+    fn otlp_log_layer_is_none_when_the_exporter_fails_to_build() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318");
+            // Not a recognized OTLP compression algorithm, so the exporter
+            // builder fails at build() before any network call is made.
+            std::env::set_var("OTEL_EXPORTER_OTLP_COMPRESSION", "not-a-real-algorithm");
+        }
+        let layer = otlp_log_layer();
+        unsafe {
+            std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+            std::env::remove_var("OTEL_EXPORTER_OTLP_COMPRESSION");
+        }
+        assert!(
+            layer.is_none(),
+            "an unbuildable exporter must fail closed rather than panic"
+        );
+    }
 }
