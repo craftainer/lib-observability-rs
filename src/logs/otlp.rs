@@ -14,7 +14,7 @@ use tracing_subscriber::filter::{FilterFn, Filtered};
 /// path segment of an event's target, exactly (`h2` matches `h2::codec`, not
 /// `h2_foo`), so every crate name is listed in full. The exporter is
 /// `http-proto` over `reqwest` + `rustls` (no `tonic`).
-const EXPORTER_CRATES: [&str; 17] = [
+const EXPORTER_CRATES: [&str; 21] = [
     "hyper",
     "hyper_util",
     "hyper_rustls",
@@ -32,6 +32,10 @@ const EXPORTER_CRATES: [&str; 17] = [
     "http_body_util",
     "rustls_platform_verifier",
     "rustls_native_certs",
+    "rustls_pki_types",
+    "webpki",
+    "want",
+    "http_body",
 ];
 
 /// Whether an event may be exported: false for the exporter's own stack.
@@ -49,9 +53,11 @@ fn exportable_target(target: &str) -> bool {
 /// (general or logs-specific), and neither `OTEL_SDK_DISABLED=true` nor
 /// `OTEL_LOGS_EXPORTER` containing `none`, as in `lib-observability-py`.
 fn export_requested(env: &dyn Fn(&str) -> Option<String>) -> bool {
-    let non_empty = |name: &str| env(name).is_some_and(|value| !value.is_empty());
-    if !(non_empty("OTEL_EXPORTER_OTLP_ENDPOINT") || non_empty("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"))
-    {
+    // The logs-specific endpoint, even when empty, wins over the general one,
+    // as in the OpenTelemetry spec (an empty value is how to opt logs out).
+    let endpoint =
+        env("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT").or_else(|| env("OTEL_EXPORTER_OTLP_ENDPOINT"));
+    if endpoint.is_none_or(|value| value.is_empty()) {
         return false;
     }
     if env("OTEL_SDK_DISABLED").is_some_and(|v| v.trim().eq_ignore_ascii_case("true")) {
@@ -171,6 +177,11 @@ mod tests {
             "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
             "http://c:4318/v1/logs"
         )])));
+        // An empty logs endpoint opts logs out whatever the general one says.
+        assert!(!export_requested(&env_of(&[
+            ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://c:4318"),
+            ("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", ""),
+        ])));
     }
 
     #[test]
@@ -323,6 +334,7 @@ mod tests {
             let mut buf = [0u8; 4096];
             while !request_complete(&data) {
                 let n = stream.read(&mut buf).unwrap();
+                assert!(n > 0, "the client closed before sending a whole request");
                 data.extend_from_slice(&buf[..n]);
             }
             let content_length = body_length(&data).unwrap();

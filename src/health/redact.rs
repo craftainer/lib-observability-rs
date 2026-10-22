@@ -96,7 +96,7 @@ fn secret_value_span(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
             start
                 + bytes[start..]
                     .iter()
-                    .take_while(|b| !b.is_ascii_whitespace() && !matches!(**b, b'&' | b'\'' | b'"'))
+                    .take_while(|b| !b.is_ascii_whitespace() && !matches!(**b, b'\'' | b'"'))
                     .count()
         }
     };
@@ -149,7 +149,10 @@ mod tests {
 
     #[test]
     fn secrets_containing_separators_are_fully_redacted() {
-        assert_eq!(redact("password=a;b,c)d done"), "password=[REDACTED] done");
+        assert_eq!(
+            redact("password=a;b,c)d&e done"),
+            "password=[REDACTED] done"
+        );
         assert_eq!(redact(r"token='it\'s secret' x"), "token=[REDACTED] x");
     }
 
@@ -166,7 +169,7 @@ mod tests {
         );
         assert_eq!(
             redact("PASSWORD: hunter2 token = 'a b c' and db_pwd=x&k=1"),
-            "PASSWORD: [REDACTED] token = [REDACTED] and db_pwd=[REDACTED]&k=1"
+            "PASSWORD: [REDACTED] token = [REDACTED] and db_pwd=[REDACTED]"
         );
         assert_eq!(
             redact("secret_key=\"q r\" end"),
