@@ -1,4 +1,4 @@
 {
-  "template_repo": "craftainer/template-base",
-  "synced_tag": "v1.7.0"
+  "template_repo": "craftainer/template-rust-crate",
+  "synced_tag": "v1.0.0"
 }
