@@ -17,15 +17,31 @@
 //! - `s3`: [`health::checks::S3HealthCheck`].
 //! - `http`: [`health::checks::HttpHealthCheck`].
 //! - `otel`: OTLP/HTTP log export from [`logs::configure_logging`].
+//! - `testing`: `health::checks::MockHealthCheck`, an always-healthy stub.
+//!
+//! `sqlx` is built without a TLS backend; see the README's "sqlx TLS".
 //!
 //! # Examples
 //!
 //! ```
-//! use craftainer_observability::health::checks::MockHealthCheck;
-//! use craftainer_observability::health::HealthRegistry;
+//! use async_trait::async_trait;
+//! use craftainer_observability::health::{HealthCheck, HealthCheckResult, HealthRegistry};
+//! use std::time::Duration;
 //!
-//! let mut registry = HealthRegistry::new();
-//! registry.register(Box::new(MockHealthCheck::new("database")));
+//! struct Always;
+//!
+//! #[async_trait]
+//! impl HealthCheck for Always {
+//!     fn name(&self) -> &str {
+//!         "always"
+//!     }
+//!     async fn check(&self) -> HealthCheckResult {
+//!         HealthCheckResult { healthy: true, detail: None }
+//!     }
+//! }
+//!
+//! let mut registry = HealthRegistry::new().with_default_timeout(Duration::from_secs(2));
+//! registry.register(Box::new(Always)).expect("names are unique");
 //! ```
 
 pub mod error;

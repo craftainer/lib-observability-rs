@@ -13,3 +13,12 @@ async fn redis_health_check_reports_healthy_against_a_real_redis() {
     assert!(result.healthy, "{:?}", result.detail);
     assert!(result.detail.is_none());
 }
+
+#[tokio::test]
+async fn redis_health_check_reuses_its_connection_across_checks() {
+    let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://redis:6379/0".to_string());
+    let check = RedisHealthCheck::new(url);
+    for _ in 0..3 {
+        assert!(check.check().await.healthy);
+    }
+}

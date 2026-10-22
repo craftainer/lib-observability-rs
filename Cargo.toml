@@ -48,20 +48,25 @@ axum = { version = "=0.8.9", default-features = false, features = ["json", "toki
 futures = { version = "=0.3.34", default-features = false, features = ["std", "async-await"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 thiserror = "=2.0.20"
+# `time` for the per-check timeout; `sync` for the Redis check's lazy connection.
+tokio = { version = "=1.53.1", default-features = false, features = ["sync", "time"] }
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["env-filter", "fmt", "json", "registry", "std"] }
 
 # Optional, one feature per backing service a ready-made check talks to.
 aws-sdk-s3 = { version = "=1.112.0", optional = true, default-features = false, features = ["default-https-client", "rt-tokio", "behavior-version-latest"] }
-redis = { version = "=1.7.0", optional = true, default-features = false, features = ["tokio-comp"] }
+redis = { version = "=1.7.0", optional = true, default-features = false, features = ["tokio-comp", "connection-manager"] }
 reqwest = { version = "=0.13.5", optional = true, default-features = false, features = ["rustls"] }
 sqlx = { version = "=0.9.0", optional = true, default-features = false, features = ["runtime-tokio", "postgres"] }
 
-# OTLP log export. "http-proto" with "reqwest-client", not the default gRPC
-# exporter, so the one reqwest/rustls stack serves every feature.
+# OTLP log export. "http-proto" over reqwest + rustls, not the default gRPC
+# exporter, so the one reqwest/rustls stack serves every feature. The
+# *blocking* reqwest client is deliberate: the batch processor exports from
+# its own plain thread, where the async client panics ("there is no reactor
+# running") and so exports nothing. "reqwest-rustls" makes https endpoints work.
 opentelemetry = { version = "=0.32.0", optional = true, default-features = false, features = ["logs"] }
 opentelemetry-appender-tracing = { version = "=0.32.0", optional = true, default-features = false }
-opentelemetry-otlp = { version = "=0.32.0", optional = true, default-features = false, features = ["logs", "http-proto", "reqwest-client"] }
+opentelemetry-otlp = { version = "=0.32.0", optional = true, default-features = false, features = ["logs", "http-proto", "reqwest-blocking-client", "reqwest-rustls"] }
 opentelemetry_sdk = { version = "=0.32.1", optional = true, default-features = false, features = ["logs", "rt-tokio"] }
 
 [dev-dependencies]
@@ -72,7 +77,8 @@ tower = { version = "=0.5.3", features = ["util"] }
 
 [features]
 # All off by default: a service pulls in only the clients it has.
-# `postgres`: `DatabaseHealthCheck` over an `sqlx::PgPool`.
+# `postgres`: `DatabaseHealthCheck` over an `sqlx::PgPool`. sqlx is built with
+# no TLS backend here; see "sqlx TLS" in the README.
 postgres = ["dep:sqlx"]
 # `redis`: `RedisHealthCheck` (PING).
 redis = ["dep:redis"]
@@ -80,6 +86,10 @@ redis = ["dep:redis"]
 s3 = ["dep:aws-sdk-s3"]
 # `http`: `HttpHealthCheck` (GET a URL, expect 2xx).
 http = ["dep:reqwest"]
+# `testing`: `MockHealthCheck`, an always-healthy stub for tests and for
+# modes that run without infrastructure. Off by default so production builds
+# cannot register a check that always says healthy.
+testing = []
 # `otel`: `logs::configure_logging` also exports logs over OTLP/HTTP when
 # the standard `OTEL_EXPORTER_OTLP_*` endpoint variables are set.
 otel = [
