@@ -1,54 +1,56 @@
-# template-rust-crate
+# lib-observability-rs
 
 > [!NOTE]
 > This repository is vibe coded with [Claude](https://claude.com/product/claude-code).
 
-A template for a tested, linted and publishable Rust library crate: a Cargo
-workspace with one example crate, `rustfmt`, `clippy -D warnings`, a 100%
-line-coverage gate (`cargo-llvm-cov`), `cargo-deny`, `cargo-semver-checks`,
-and a release that publishes to crates.io through trusted publishing. It is
-itself an instance of
-[`template-base`](https://github.com/craftainer/template-base) (so it gets the
-devcontainer, CI, release workflow and template sync from there) and is
-itself a template: a crate created from it receives fixes through template
-sync. See [`docs/TEMPLATE.md`](docs/TEMPLATE.md) for the conventions shared
-by every instance, and
-[`docs/adrs/0001-rust-crate-template.md`](docs/adrs/0001-rust-crate-template.md)
-for why it exists.
+`craftainer-observability` (imported as `craftainer_observability`): health
+checks, structured JSON logging and OTLP log export for
+[Axum](https://github.com/tokio-rs/axum) services, extracted from
+[`template-axum`](https://github.com/craftainer/template-axum). It is an
+instance of
+[`template-rust-crate`](https://github.com/craftainer/template-rust-crate)
+(so it gets the devcontainer, CI, release workflow and template sync from
+there); see [`docs/TEMPLATE.md`](docs/TEMPLATE.md) for the conventions shared
+by every instance and
+[`docs/adrs/0002-extract-the-observability-layer.md`](docs/adrs/0002-extract-the-observability-layer.md)
+for why the crate exists and where its boundary is.
 
-## Creating a crate from this template
+- `health::HealthCheck` and `HealthRegistry`: a trait for one dependency's
+  check and a registry that runs them all concurrently.
+- `health::checks`: ready-made checks for Postgres, Redis or Valkey, S3 and
+  any HTTP endpoint, plus an always-healthy mock.
+- `health::router::router`: the `/live` and `/ready` routes, over any state
+  that implements `HasHealthRegistry`.
+- `logs::configure_logging`: JSON lines on stdout, and with the `otel`
+  feature OTLP/HTTP export of the same logs.
+- `Error`, the crate's own error type.
 
-1. On GitHub, use "Use this template" on this repository (or
-   `gh repo create <org>/<name> --template craftainer/template-rust-crate`).
-2. Rename the crate. The convention for this organization is
-   `craftainer-<name>` on crates.io (repository `lib-<name>-rs`), imported as
-   `craftainer_<name>`. These places move together:
-   - `Cargo.toml`: `[package] name` (`template-rust-crate`), the
-     description, and `[workspace.package] repository`;
-   - `src/lib.rs`: the `template_rust_crate::` path in the doctest;
-   - `tests/*.rs`: every `use template_rust_crate::…`;
-   - this file's title and description.
+```rust,ignore
+let mut registry = HealthRegistry::new();
+registry.register(Box::new(DatabaseHealthCheck::new(pool.clone())));
+registry.register(Box::new(RedisHealthCheck::new("redis://redis:6379/0")));
+// ... implement HasHealthRegistry on the app state, then:
+let app = Router::new().nest("/health", router()).with_state(state);
+```
 
-   Then run `cargo update --workspace` to refresh `Cargo.lock` for the new
-   name, and add `keywords` and `categories` to `[package]`.
-3. Point template sync at this template. `.github/template-sync-state.json`
-   here records the `template-base` tag this template itself last synced
-   from; the copy in a new crate must instead name this repository and the
-   tag it was created at (the latest release of
-   `craftainer/template-rust-crate`):
+## Features
 
-   ```json
-   {"template_repo": "craftainer/template-rust-crate", "synced_tag": "vX.Y.Z"}
-   ```
+All off by default, so a service compiles only the clients it has.
 
-   Add a `TEMPLATE_SYNC_TOKEN` secret too (see `.github/workflows/README.md`,
-   "Template sync"). Files the crate owns beyond the manifest's `ignore`
-   tier go in `.github/template-sync-manifest.local.yml` under `ignore:`.
-4. Open the repository in the devcontainer, then run
-   `prek run --all-files --hook-stage manual`; everything should pass before
-   you write any code.
-5. Keep `LICENSE` (GPL-3.0) and `deny.toml`'s license allow-list, or change
-   both together.
+- `postgres`: `DatabaseHealthCheck` over an `sqlx::PgPool`.
+- `redis`: `RedisHealthCheck`.
+- `s3`: `S3HealthCheck` over an `aws_sdk_s3::Client`.
+- `http`: `HttpHealthCheck`.
+- `otel`: OTLP/HTTP log export from `configure_logging`, enabled at run time
+  by `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`.
+
+## Development
+
+Open the repository in the devcontainer: it starts Postgres, Valkey and
+RustFS, which the integration tests need (`tests/README.md`). Then run
+`prek run --all-files --hook-stage manual`; that runs `rustfmt`,
+`clippy -D warnings`, the tests with a 100% line-coverage gate, `cargo-deny`
+and the template-sync manifest check.
 
 ## Publishing to crates.io
 

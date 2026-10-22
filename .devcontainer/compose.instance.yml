@@ -1,5 +1,52 @@
-# Instance-owned, never touched by template sync: an instance puts its
-# `include:` stack fragments and any extra `services.myapp` settings
-# (`env_file`, `environment`, `depends_on`) here, so `compose.yml` stays
-# template-owned.
-services: {}
+# lib-observability-rs's instance-owned additions to template-rust-crate's
+# compose.yml (whose dev service is `myapp`): the Postgres, Valkey and
+# S3-compatible store its integration tests run against. Credentials are
+# local-dev throwaways on the compose network (no ports are published), so
+# they live here as literals.
+include:
+  - ./stack/redis/compose.yml
+  - ./stack/s3/compose.yml
+
+services:
+  postgres:
+    image: postgres:18.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: observability
+      POSTGRES_PASSWORD: observability
+      POSTGRES_DB: observability_test
+    # 18+'s image keeps data in a major-version subdirectory of this mount, so
+    # the volume mounts one level up (docker-library/postgres#1259).
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    # $$: a literal $ for the container's shell, which reads the variables above.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  myapp:
+    env_file:
+      - ./stack/s3/s3.env
+    # Waits for the healthchecks so postCreateCommand and prek never start
+    # before the services they would talk to are ready.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      s3:
+        condition: service_healthy
+    # Read by the tests under tests/; their defaults match.
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: observability
+      POSTGRES_PASSWORD: observability
+      POSTGRES_DB: observability_test
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT_URL: http://s3:9000
+
+volumes:
+  postgres-data:

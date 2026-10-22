@@ -1,59 +1,35 @@
-//! Example library crate: a tiny, fully tested public API to replace.
+//! Observability building blocks for Axum services: health checks and the
+//! `/live` and `/ready` router that serves them, and structured JSON logging
+//! with optional OTLP export.
+//!
+//! The crate knows nothing about an application's configuration, error type
+//! or state: a host passes plain values (a pool, a client, a URL) to the
+//! checks it wants, implements [`health::router::HasHealthRegistry`] on its
+//! state, and calls [`logs::configure_logging`] once at startup.
+//!
+//! # Features
+//!
+//! Everything is off by default, so a service compiles only the clients it
+//! has.
+//!
+//! - `postgres`: [`health::checks::DatabaseHealthCheck`].
+//! - `redis`: [`health::checks::RedisHealthCheck`].
+//! - `s3`: [`health::checks::S3HealthCheck`].
+//! - `http`: [`health::checks::HttpHealthCheck`].
+//! - `otel`: OTLP/HTTP log export from [`logs::configure_logging`].
+//!
+//! # Examples
+//!
+//! ```
+//! use craftainer_observability::health::checks::MockHealthCheck;
+//! use craftainer_observability::health::HealthRegistry;
+//!
+//! let mut registry = HealthRegistry::new();
+//! registry.register(Box::new(MockHealthCheck::new("database")));
+//! ```
 
-use std::fmt;
+pub mod error;
+pub mod health;
+pub mod logs;
 
-/// Why [`greet`] refused its input.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GreetError {
-    /// The name was empty or only whitespace.
-    EmptyName,
-}
-
-impl fmt::Display for GreetError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::EmptyName => f.write_str("name must not be empty"),
-        }
-    }
-}
-
-impl std::error::Error for GreetError {}
-
-/// Builds a greeting for `name`.
-///
-/// # Errors
-///
-/// Returns [`GreetError::EmptyName`] when `name` is empty or only whitespace.
-///
-/// # Examples
-///
-/// ```
-/// assert_eq!(template_rust_crate::greet("Ada").unwrap(), "Hello, Ada!");
-/// ```
-pub fn greet(name: &str) -> Result<String, GreetError> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err(GreetError::EmptyName);
-    }
-    Ok(format!("Hello, {name}!"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn greets_a_name() {
-        assert_eq!(greet("  Ada ").unwrap(), "Hello, Ada!");
-    }
-
-    #[test]
-    fn rejects_blank_names() {
-        assert_eq!(greet(" ").unwrap_err(), GreetError::EmptyName);
-    }
-
-    #[test]
-    fn error_displays_a_message() {
-        assert_eq!(GreetError::EmptyName.to_string(), "name must not be empty");
-    }
-}
+pub use error::Error;

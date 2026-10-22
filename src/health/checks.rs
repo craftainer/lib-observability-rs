@@ -1,15 +1,26 @@
-//! Concrete `HealthCheck` implementations -- port of `health/checks.py`.
-//! Every failure is caught here (never propagated) and reported with a
-//! fixed, non-leaking `detail` string; the real error goes to `tracing`
-//! only (`docs/nfrs/0008-health-check-isolation.md`).
+//! Ready-made [`HealthCheck`] implementations.
+//!
+//! Each failing check catches its dependency's error here, reports a fixed,
+//! non-leaking `detail` string, and sends the real error to `tracing` only.
 
 use async_trait::async_trait;
-use sea_orm::{ConnectionTrait, DatabaseConnection, Statement};
 
 use crate::health::{HealthCheck, HealthCheckResult};
 
+#[cfg(any(
+    feature = "postgres",
+    feature = "redis",
+    feature = "s3",
+    feature = "http"
+))]
 const FAILURE_DETAIL: &str = "dependency check failed; see server logs";
 
+#[cfg(any(
+    feature = "postgres",
+    feature = "redis",
+    feature = "s3",
+    feature = "http"
+))]
 fn failure(name: &str, err: impl std::fmt::Display) -> HealthCheckResult {
     tracing::error!(check = name, error = %err, "health check failed");
     HealthCheckResult {
@@ -18,6 +29,12 @@ fn failure(name: &str, err: impl std::fmt::Display) -> HealthCheckResult {
     }
 }
 
+#[cfg(any(
+    feature = "postgres",
+    feature = "redis",
+    feature = "s3",
+    feature = "http"
+))]
 fn ok() -> HealthCheckResult {
     HealthCheckResult {
         healthy: true,
@@ -25,53 +42,58 @@ fn ok() -> HealthCheckResult {
     }
 }
 
-/// `SELECT 1` against Postgres.
+/// `SELECT 1` against Postgres, over a host-owned pool.
+#[cfg(feature = "postgres")]
 pub struct DatabaseHealthCheck {
-    db: DatabaseConnection,
+    pool: sqlx::PgPool,
 }
 
+#[cfg(feature = "postgres")]
 impl DatabaseHealthCheck {
-    pub fn new(db: DatabaseConnection) -> Self {
-        Self { db }
+    /// Checks `pool`. A pool is cheap to clone, so pass a clone of the one
+    /// the application already uses.
+    #[must_use]
+    pub fn new(pool: sqlx::PgPool) -> Self {
+        Self { pool }
     }
 }
 
+#[cfg(feature = "postgres")]
 #[async_trait]
 impl HealthCheck for DatabaseHealthCheck {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "database"
     }
 
     async fn check(&self) -> HealthCheckResult {
-        match self
-            .db
-            .execute_raw(Statement::from_string(
-                self.db.get_database_backend(),
-                "SELECT 1",
-            ))
-            .await
-        {
+        match sqlx::query("SELECT 1").execute(&self.pool).await {
             Ok(_) => ok(),
             Err(err) => failure(self.name(), err),
         }
     }
 }
 
-/// `PING` against Redis/Valkey (see `docs/adrs/0013` on the Redis-protocol
-/// name staying `redis`/`REDIS_URL` regardless of the server product).
+/// `PING` against Redis or Valkey.
+#[cfg(feature = "redis")]
 pub struct RedisHealthCheck {
     redis_url: String,
 }
 
+#[cfg(feature = "redis")]
 impl RedisHealthCheck {
-    pub fn new(redis_url: String) -> Self {
-        Self { redis_url }
+    /// Checks the server at `redis_url` (for example `redis://host:6379/0`).
+    #[must_use]
+    pub fn new(redis_url: impl Into<String>) -> Self {
+        Self {
+            redis_url: redis_url.into(),
+        }
     }
 }
 
+#[cfg(feature = "redis")]
 #[async_trait]
 impl HealthCheck for RedisHealthCheck {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "redis"
     }
 
@@ -90,20 +112,25 @@ impl HealthCheck for RedisHealthCheck {
     }
 }
 
-/// `ListBuckets` against S3/RustFS.
+/// `ListBuckets` against S3 or an S3-compatible store.
+#[cfg(feature = "s3")]
 pub struct S3HealthCheck {
     client: aws_sdk_s3::Client,
 }
 
+#[cfg(feature = "s3")]
 impl S3HealthCheck {
+    /// Checks the store `client` is configured for.
+    #[must_use]
     pub fn new(client: aws_sdk_s3::Client) -> Self {
         Self { client }
     }
 }
 
+#[cfg(feature = "s3")]
 #[async_trait]
 impl HealthCheck for S3HealthCheck {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "s3"
     }
 
@@ -115,34 +142,38 @@ impl HealthCheck for S3HealthCheck {
     }
 }
 
-/// `GET {issuer}/.well-known/openid-configuration`.
-pub struct OidcHealthCheck {
-    issuer_url: String,
+/// `GET` a URL and expect a 2xx answer, for example an `OpenID` Connect
+/// issuer's `/.well-known/openid-configuration`.
+#[cfg(feature = "http")]
+pub struct HttpHealthCheck {
+    name: String,
+    url: String,
     http: reqwest::Client,
 }
 
-impl OidcHealthCheck {
-    pub fn new(issuer_url: String) -> Self {
+#[cfg(feature = "http")]
+impl HttpHealthCheck {
+    /// Reports under `name` and probes `url`.
+    #[must_use]
+    pub fn new(name: impl Into<String>, url: impl Into<String>) -> Self {
         Self {
-            issuer_url,
+            name: name.into(),
+            url: url.into(),
             http: reqwest::Client::new(),
         }
     }
 }
 
+#[cfg(feature = "http")]
 #[async_trait]
-impl HealthCheck for OidcHealthCheck {
+impl HealthCheck for HttpHealthCheck {
     fn name(&self) -> &str {
-        "oidc"
+        &self.name
     }
 
     async fn check(&self) -> HealthCheckResult {
-        let url = format!(
-            "{}/.well-known/openid-configuration",
-            self.issuer_url.trim_end_matches('/')
-        );
         let result: Result<(), reqwest::Error> = async {
-            self.http.get(url).send().await?.error_for_status()?;
+            self.http.get(&self.url).send().await?.error_for_status()?;
             Ok(())
         }
         .await;
@@ -153,13 +184,15 @@ impl HealthCheck for OidcHealthCheck {
     }
 }
 
-/// Always-healthy stub used under `Mode::Mock` (FR-0012) -- no network,
-/// no real dependency.
+/// An always-healthy stub for modes that run without infrastructure: no
+/// network, no real dependency.
 pub struct MockHealthCheck {
     name: &'static str,
 }
 
 impl MockHealthCheck {
+    /// Reports healthy under `name`.
+    #[must_use]
     pub fn new(name: &'static str) -> Self {
         Self { name }
     }
@@ -183,20 +216,6 @@ impl HealthCheck for MockHealthCheck {
 mod tests {
     use super::*;
 
-    // Real-dependency checks need a live service to exercise their
-    // success path. DatabaseHealthCheck's is covered against real
-    // Postgres in tests/postgres_health_check.rs -- Postgres is already
-    // this tier's own dependency. Redis/S3/Oidc's happy paths stay
-    // deliberately uncovered (`docs/adrs/0010`): reaching them means
-    // going through `lib::build_health_registry`'s real-backend wiring,
-    // which also calls `std::process::exit`-adjacent `expect`s on
-    // failure. What's unit-testable without a network here is:
-    // MockHealthCheck's own fixed shape, the shared ok()/failure()
-    // helpers every check funnels through (`docs/nfrs/0008-health-check-
-    // isolation.md` -- failure() never leaks the real error into
-    // `detail`), and Redis/Oidc's own *failure* paths (no live service
-    // needed for those -- see below).
-
     #[tokio::test]
     async fn mock_health_check_is_always_healthy_with_a_mocked_marker() {
         let check = MockHealthCheck::new("database");
@@ -206,6 +225,12 @@ mod tests {
         assert_eq!(result.detail.as_deref(), Some("mocked"));
     }
 
+    #[cfg(any(
+        feature = "postgres",
+        feature = "redis",
+        feature = "s3",
+        feature = "http"
+    ))]
     #[test]
     fn ok_helper_reports_healthy_with_no_detail() {
         let result = ok();
@@ -213,31 +238,54 @@ mod tests {
         assert!(result.detail.is_none());
     }
 
+    #[cfg(any(
+        feature = "postgres",
+        feature = "redis",
+        feature = "s3",
+        feature = "http"
+    ))]
     #[test]
     fn failure_helper_reports_unhealthy_with_a_fixed_non_leaking_detail() {
         let result = failure("database", "connection refused: password=hunter2");
         assert!(!result.healthy);
-        // The real error text must never reach the client -- only the
-        // fixed FAILURE_DETAIL string does (NFR-0015-style redaction).
+        // The real error text must never reach the client, only the fixed
+        // string does.
         assert_eq!(result.detail.as_deref(), Some(FAILURE_DETAIL));
         assert!(!result.detail.unwrap().contains("hunter2"));
     }
 
+    // No live service is needed for the failure paths: an unroutable address
+    // is refused at once rather than hanging.
+
+    #[cfg(feature = "redis")]
     #[tokio::test]
     async fn redis_health_check_reports_unhealthy_for_an_unreachable_url() {
-        // No network dependency needed: an unroutable address fails fast
-        // (connection refused) rather than hanging.
-        let check = RedisHealthCheck::new("redis://127.0.0.1:1/0".to_string());
+        let check = RedisHealthCheck::new("redis://127.0.0.1:1/0");
         assert_eq!(check.name(), "redis");
         let result = check.check().await;
         assert!(!result.healthy);
         assert_eq!(result.detail.as_deref(), Some(FAILURE_DETAIL));
     }
 
+    #[cfg(feature = "http")]
     #[tokio::test]
-    async fn oidc_health_check_reports_unhealthy_for_an_unreachable_issuer() {
-        let check = OidcHealthCheck::new("http://127.0.0.1:1".to_string());
-        assert_eq!(check.name(), "oidc");
+    async fn http_health_check_reports_unhealthy_for_an_unreachable_url() {
+        let check = HttpHealthCheck::new("issuer", "http://127.0.0.1:1/ping");
+        assert_eq!(check.name(), "issuer");
+        let result = check.check().await;
+        assert!(!result.healthy);
+        assert_eq!(result.detail.as_deref(), Some(FAILURE_DETAIL));
+    }
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn database_health_check_reports_unhealthy_for_an_unreachable_pool() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_secs(2))
+            .connect_lazy("postgres://u:p@127.0.0.1:1/none")
+            .unwrap();
+        let check = DatabaseHealthCheck::new(pool);
+        assert_eq!(check.name(), "database");
         let result = check.check().await;
         assert!(!result.healthy);
         assert_eq!(result.detail.as_deref(), Some(FAILURE_DETAIL));

@@ -25,6 +25,11 @@ allow = [
     "Unicode-3.0",
     "MPL-2.0",
     "CC0-1.0",
+    # webpki-root-certs (via reqwest's rustls-platform-verifier): the CCADB
+    # root certificate data, permissively licensed.
+    "CDLA-Permissive-2.0",
+    # xxhash-rust (via redis): a permissive license, GPL-compatible.
+    "BSL-1.0",
 ]
 
 [bans]

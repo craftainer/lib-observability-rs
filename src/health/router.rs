@@ -1,6 +1,9 @@
-//! `GET /health/live` and `GET /health/ready` -- port of `controllers/health.py`.
-//! Generic over any state `S: HasHealthRegistry` -- see this package's
-//! own module doc.
+//! `GET /live` and `GET /ready`.
+//!
+//! Generic over any state that implements [`HasHealthRegistry`], so the host
+//! keeps its own state type.
+
+use std::collections::BTreeMap;
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -8,18 +11,23 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::Serialize;
-use std::collections::BTreeMap;
 
-use crate::generic::controllers::HasHealthRegistry;
-use crate::health::HealthCheckResult;
+use crate::health::{HealthCheckResult, HealthRegistry};
+
+/// Implemented by a host's application state to give [`router`] its
+/// registry.
+pub trait HasHealthRegistry {
+    /// The registry `/ready` runs.
+    fn health_registry(&self) -> &HealthRegistry;
+}
 
 #[derive(Serialize)]
 struct LiveResponse {
     status: &'static str,
 }
 
-/// Dependency-free liveness probe (FR-0010) -- never touches
-/// `HealthRegistry`, so a downstream outage can't fail liveness.
+/// Dependency-free liveness probe: never touches the registry, so a
+/// downstream outage cannot fail liveness.
 async fn live() -> Json<LiveResponse> {
     Json(LiveResponse { status: "ok" })
 }
@@ -30,8 +38,8 @@ struct ReadyResponse {
     checks: BTreeMap<String, HealthCheckResult>,
 }
 
-/// Runs every registered check concurrently; 200 if all healthy, 503
-/// otherwise (FR-0011).
+/// Runs every registered check concurrently; 200 if all are healthy, 503
+/// otherwise.
 async fn ready<S>(State(state): State<S>) -> impl IntoResponse
 where
     S: HasHealthRegistry,
@@ -51,6 +59,7 @@ where
     (status, Json(body))
 }
 
+/// The `/live` and `/ready` routes, for a host to `nest` under `/health`.
 pub fn router<S>() -> Router<S>
 where
     S: HasHealthRegistry + Clone + Send + Sync + 'static,
@@ -63,32 +72,30 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::health::HealthCheck;
     use crate::health::checks::MockHealthCheck;
-    use crate::health::{HealthCheck, HealthRegistry};
     use async_trait::async_trait;
-    use axum::body::{to_bytes, Body};
-    use axum::http::{Request, StatusCode};
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
     use std::sync::Arc;
     use tower::ServiceExt;
 
     struct AlwaysUnhealthy;
     #[async_trait]
     impl HealthCheck for AlwaysUnhealthy {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "flaky-dependency"
         }
-        async fn check(&self) -> crate::health::HealthCheckResult {
-            crate::health::HealthCheckResult {
+        async fn check(&self) -> HealthCheckResult {
+            HealthCheckResult {
                 healthy: false,
                 detail: Some("down".to_string()),
             }
         }
     }
 
-    // A minimal fake implementing only `HasHealthRegistry`, not the
-    // concrete Hero-bearing `AppState` -- keeps this generic package's
-    // tests from depending on `crate::hero` at all. Mirrors
-    // `oidc::mod::tests::FakeState`'s own pattern for `HasOidcVerifier`.
+    // A minimal fake implementing only `HasHealthRegistry`, so the router
+    // is tested without any application state.
     #[derive(Clone)]
     struct FakeState {
         health_registry: Arc<HealthRegistry>,
@@ -160,8 +167,8 @@ mod tests {
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["status"], "degraded");
-        // The one healthy check must still report healthy -- one failure
-        // doesn't taint the others (NFR-0008).
+        // The one healthy check must still report healthy: one failure does
+        // not taint the others.
         assert_eq!(body["checks"]["database"]["healthy"], true);
         assert_eq!(body["checks"]["flaky-dependency"]["healthy"], false);
     }

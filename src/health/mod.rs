@@ -1,51 +1,61 @@
-//! The health-check interface and registry backing `/health/ready`.
-//! `/health/live` (in `controllers::health`) stays dependency-free and
-//! doesn't use this module at all -- see
-//! `docs/adrs/0001-mvc-layering-with-a-generic-crud-interface.md`'s health
-//! section for why liveness and readiness are split this way.
+//! Health checks and the registry that runs them.
+//!
+//! [`router::router`] serves `/live` and `/ready`. `/live` is dependency-free
+//! and never touches the registry, so a downstream outage cannot fail
+//! liveness; `/ready` runs every registered [`HealthCheck`] concurrently.
 
 pub mod checks;
+pub mod router;
 
 use async_trait::async_trait;
 
-/// One check's outcome -- port of `health/base.py`'s `HealthCheckResult`.
-#[derive(Debug, Clone, serde::Serialize)]
+/// One check's outcome.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct HealthCheckResult {
+    /// Whether the dependency answered as expected.
     pub healthy: bool,
+    /// A short, client-safe note. The ready-made failing checks use a fixed
+    /// string and log the real error instead, so it never leaks to a client.
     pub detail: Option<String>,
 }
 
-/// A single external dependency's liveness check. Object-safe (via
-/// `async-trait`) so `HealthRegistry` can hold a heterogeneous
-/// `Vec<Box<dyn HealthCheck>>` -- adding a new dependency means
-/// implementing this trait and registering it, nothing else
-/// (`docs/nfrs/0009-extensible-health-registry.md`).
+/// A single external dependency's check.
+///
+/// Object-safe (via `async-trait`) so [`HealthRegistry`] can hold a
+/// heterogeneous list: adding a dependency means implementing this trait and
+/// registering the value, nothing else. An implementation must catch its own
+/// dependency's failure and report it as an unhealthy [`HealthCheckResult`]
+/// rather than panic, so one broken dependency cannot take the readiness
+/// response down.
 #[async_trait]
 pub trait HealthCheck: Send + Sync {
+    /// The key this check's result appears under in `/ready`'s response.
     fn name(&self) -> &str;
+
+    /// Probes the dependency.
     async fn check(&self) -> HealthCheckResult;
 }
 
-/// Runs every registered check concurrently -- port of `health/registry.py`.
+/// Runs every registered check concurrently.
 #[derive(Default)]
 pub struct HealthRegistry {
     checks: Vec<Box<dyn HealthCheck>>,
 }
 
 impl HealthRegistry {
+    /// An empty registry.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Adds a check.
     pub fn register(&mut self, check: Box<dyn HealthCheck>) {
         self.checks.push(check);
     }
 
-    /// Run every check concurrently (`futures::future::join_all`-style),
-    /// mirroring `asyncio.gather`. Each concrete check catches its own
-    /// dependency's failure internally (`docs/nfrs/0008-health-check-
-    /// isolation.md`) -- nothing here can panic the whole readiness
-    /// response.
+    /// Runs every check concurrently and returns `(name, result)` in
+    /// registration order.
     pub async fn run_all(&self) -> Vec<(String, HealthCheckResult)> {
         let futures = self
             .checks
@@ -58,8 +68,8 @@ impl HealthRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     /// A check whose outcome and (simulated) latency are set at
@@ -99,7 +109,7 @@ mod tests {
     #[tokio::test]
     async fn empty_registry_reports_no_checks() {
         let registry = HealthRegistry::new();
-        assert!(registry.run_all().await.is_empty());
+        assert_eq!(registry.run_all().await.len(), 0);
     }
 
     #[tokio::test]
@@ -144,12 +154,9 @@ mod tests {
         }
         let start = std::time::Instant::now();
         let results = registry.run_all().await;
+        let elapsed = start.elapsed();
         assert_eq!(results.len(), 3);
-        assert!(
-            start.elapsed() < Duration::from_millis(500),
-            "run_all took {:?}, expected concurrent execution well under 3x200ms",
-            start.elapsed()
-        );
+        assert!(elapsed < Duration::from_millis(500), "took {elapsed:?}");
     }
 
     #[tokio::test]
