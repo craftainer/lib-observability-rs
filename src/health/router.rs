@@ -129,8 +129,12 @@ mod tests {
     #[tokio::test]
     async fn ready_returns_200_when_every_check_is_healthy() {
         let mut registry = HealthRegistry::new();
-        registry.register(Box::new(MockHealthCheck::new("database")));
-        registry.register(Box::new(MockHealthCheck::new("redis")));
+        registry
+            .register(Box::new(MockHealthCheck::new("database")))
+            .unwrap();
+        registry
+            .register(Box::new(MockHealthCheck::new("redis")))
+            .unwrap();
         let app = router().with_state(state_with_registry(registry));
         let response = app
             .oneshot(
@@ -151,8 +155,10 @@ mod tests {
     #[tokio::test]
     async fn ready_returns_503_when_any_single_check_is_unhealthy() {
         let mut registry = HealthRegistry::new();
-        registry.register(Box::new(MockHealthCheck::new("database")));
-        registry.register(Box::new(AlwaysUnhealthy));
+        registry
+            .register(Box::new(MockHealthCheck::new("database")))
+            .unwrap();
+        registry.register(Box::new(AlwaysUnhealthy)).unwrap();
         let app = router().with_state(state_with_registry(registry));
         let response = app
             .oneshot(
@@ -171,5 +177,37 @@ mod tests {
         // not taint the others.
         assert_eq!(body["checks"]["database"]["healthy"], true);
         assert_eq!(body["checks"]["flaky-dependency"]["healthy"], false);
+    }
+
+    struct Hangs;
+    #[async_trait]
+    impl HealthCheck for Hangs {
+        fn name(&self) -> &'static str {
+            "hung-dependency"
+        }
+        async fn check(&self) -> HealthCheckResult {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn ready_returns_503_instead_of_hanging_when_a_check_hangs() {
+        let mut registry =
+            HealthRegistry::new().with_default_timeout(std::time::Duration::from_millis(50));
+        registry.register(Box::new(Hangs)).unwrap();
+        let app = router().with_state(state_with_registry(registry));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["checks"]["hung-dependency"]["healthy"], false);
     }
 }

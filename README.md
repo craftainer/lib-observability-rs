@@ -16,19 +16,29 @@ by every instance and
 for why the crate exists and where its boundary is.
 
 - `health::HealthCheck` and `HealthRegistry`: a trait for one dependency's
-  check and a registry that runs them all concurrently.
-- `health::checks`: ready-made checks for Postgres, Redis or Valkey, S3 and
-  any HTTP endpoint, plus an always-healthy mock.
+  check and a registry that runs them all concurrently, each under a timeout
+  (5 seconds by default, as in `lib-observability-py`; set it per registry
+  with `with_default_timeout` and per check with `HealthCheck::timeout` or
+  the ready-made checks' `with_timeout`). A timed-out check reports
+  unhealthy. `register` rejects a duplicate name.
+- `health::checks`: ready-made checks for Postgres, Redis or Valkey (one
+  reused connection), S3 and any HTTP endpoint, plus, behind the `testing`
+  feature, an always-healthy mock. Their logged errors have credentials
+  redacted.
 - `health::router::router`: the `/live` and `/ready` routes, over any state
   that implements `HasHealthRegistry`.
 - `logs::configure_logging`: JSON lines on stdout, and with the `otel`
-  feature OTLP/HTTP export of the same logs.
+  feature OTLP/HTTP export of the same logs. It returns a `LoggingGuard`:
+  keep it until exit and call `shutdown()` (or let it drop) so the last batch
+  is flushed. An exporter that cannot be built is an `Error::ExporterBuild`
+  (`configure_logging_without_export` is the JSON-only fallback).
 - `Error`, the crate's own error type.
 
 ```rust,ignore
 let mut registry = HealthRegistry::new();
-registry.register(Box::new(DatabaseHealthCheck::new(pool.clone())));
-registry.register(Box::new(RedisHealthCheck::new("redis://redis:6379/0")));
+registry.register(Box::new(DatabaseHealthCheck::new(pool.clone())))?;
+registry.register(Box::new(RedisHealthCheck::new("redis://redis:6379/0")))?;
+let _logging = configure_logging()?; // keep it alive until exit
 // ... implement HasHealthRegistry on the app state, then:
 let app = Router::new().nest("/health", router()).with_state(state);
 ```
@@ -37,12 +47,25 @@ let app = Router::new().nest("/health", router()).with_state(state);
 
 All off by default, so a service compiles only the clients it has.
 
-- `postgres`: `DatabaseHealthCheck` over an `sqlx::PgPool`.
+- `postgres`: `DatabaseHealthCheck` over an `sqlx::PgPool` (see "sqlx TLS").
 - `redis`: `RedisHealthCheck`.
 - `s3`: `S3HealthCheck` over an `aws_sdk_s3::Client`.
 - `http`: `HttpHealthCheck`.
 - `otel`: OTLP/HTTP log export from `configure_logging`, enabled at run time
-  by `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`.
+  by a non-empty `OTEL_EXPORTER_OTLP_ENDPOINT` or
+  `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, and switched off by
+  `OTEL_SDK_DISABLED=true` or `OTEL_LOGS_EXPORTER=none`.
+- `testing`: `MockHealthCheck`. Enable it from a dev-dependency or a
+  test/mock mode, not in production builds.
+
+### sqlx TLS
+
+The crate depends on `sqlx` with `default-features = false` and no TLS
+backend, so it adds none to your build. A Postgres server that requires TLS
+(most managed ones) fails to connect unless your own `sqlx` dependency enables
+one, for example `features = ["tls-rustls"]` (or `tls-native-tls`,
+`tls-rustls-aws-lc-rs`, ...). Cargo unifies features, so the pool you pass to
+`DatabaseHealthCheck::new` and this crate share the backend you chose.
 
 ## Development
 

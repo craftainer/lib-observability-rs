@@ -6,7 +6,7 @@ a dependent would, and runs against the devcontainer's backing services
 
 - `postgres_health_check.rs` — `DatabaseHealthCheck` against Postgres
   (`POSTGRES_*`). Feature `postgres`.
-- `redis_health_check.rs` — `RedisHealthCheck` against Valkey (`REDIS_URL`).
+- `redis_health_check.rs` — `RedisHealthCheck` against Valkey (`REDIS_URL`), including connection reuse.
   Feature `redis`.
 - `s3_health_check.rs` — `S3HealthCheck` against RustFS (`S3_ENDPOINT_URL`,
   `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY`). Feature `s3`.
