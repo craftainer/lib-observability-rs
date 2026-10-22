@@ -1,0 +1,4 @@
+ignore:
+  # The backing services the integration tests run against (Valkey and
+  # RustFS); Postgres is defined inline in compose.instance.yml.
+  - .devcontainer/stack/

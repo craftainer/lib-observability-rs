@@ -11,7 +11,7 @@ edition = "2024"
 # Matches rust-toolchain.toml (major.minor is enough for MSRV semantics).
 rust-version = "1.99"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/craftainer/template-rust-crate"
+repository = "https://github.com/craftainer/lib-observability-rs"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -22,10 +22,10 @@ all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 
 [package]
-# The template carries its own name; an instance renames it to
-# `craftainer-<name>` (see README.md).
-name = "template-rust-crate"
-description = "Template repository for publishable Rust crates"
+name = "craftainer-observability"
+description = "Health checks, JSON logging and OpenTelemetry for Axum services"
+keywords = ["observability", "health-check", "axum", "logging", "opentelemetry"]
+categories = ["web-programming", "asynchronous"]
 readme = "README.md"
 # Stays 0.0.0 in git: the release tag is the real version. `publish` is left
 # at Cargo's default (true) and gated by the release contract's
@@ -40,7 +40,71 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+# Exact pins (`=x.y.z`), as in template-axum, so Renovate bumps them one at a
+# time.
 [dependencies]
+async-trait = "=0.1.92"
+axum = { version = "=0.8.9", default-features = false, features = ["json", "tokio"] }
+futures = { version = "=0.3.34", default-features = false, features = ["std", "async-await"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+thiserror = "=2.0.20"
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["env-filter", "fmt", "json", "registry", "std"] }
+
+# Optional, one feature per backing service a ready-made check talks to.
+aws-sdk-s3 = { version = "=1.112.0", optional = true, default-features = false, features = ["default-https-client", "rt-tokio", "behavior-version-latest"] }
+redis = { version = "=1.7.0", optional = true, default-features = false, features = ["tokio-comp"] }
+reqwest = { version = "=0.13.5", optional = true, default-features = false, features = ["rustls"] }
+sqlx = { version = "=0.9.0", optional = true, default-features = false, features = ["runtime-tokio", "postgres"] }
+
+# OTLP log export. "http-proto" with "reqwest-client", not the default gRPC
+# exporter, so the one reqwest/rustls stack serves every feature.
+opentelemetry = { version = "=0.32.0", optional = true, default-features = false, features = ["logs"] }
+opentelemetry-appender-tracing = { version = "=0.32.0", optional = true, default-features = false }
+opentelemetry-otlp = { version = "=0.32.0", optional = true, default-features = false, features = ["logs", "http-proto", "reqwest-client"] }
+opentelemetry_sdk = { version = "=0.32.1", optional = true, default-features = false, features = ["logs", "rt-tokio"] }
+
+[dev-dependencies]
+aws-config = "=1.8.11"
+serde_json = "=1.0.151"
+tokio = { version = "=1.53.1", features = ["macros", "rt-multi-thread", "time"] }
+tower = { version = "=0.5.3", features = ["util"] }
+
+[features]
+# All off by default: a service pulls in only the clients it has.
+# `postgres`: `DatabaseHealthCheck` over an `sqlx::PgPool`.
+postgres = ["dep:sqlx"]
+# `redis`: `RedisHealthCheck` (PING).
+redis = ["dep:redis"]
+# `s3`: `S3HealthCheck` (ListBuckets) over an `aws_sdk_s3::Client`.
+s3 = ["dep:aws-sdk-s3"]
+# `http`: `HttpHealthCheck` (GET a URL, expect 2xx).
+http = ["dep:reqwest"]
+# `otel`: `logs::configure_logging` also exports logs over OTLP/HTTP when
+# the standard `OTEL_EXPORTER_OTLP_*` endpoint variables are set.
+otel = [
+  "dep:opentelemetry",
+  "dep:opentelemetry-appender-tracing",
+  "dep:opentelemetry-otlp",
+  "dep:opentelemetry_sdk",
+]
 
 [lints]
 workspace = true
+
+# Each needs a live service from the devcontainer and its feature.
+[[test]]
+name = "postgres_health_check"
+required-features = ["postgres"]
+
+[[test]]
+name = "redis_health_check"
+required-features = ["redis"]
+
+[[test]]
+name = "s3_health_check"
+required-features = ["s3"]
+
+[[test]]
+name = "http_health_check"
+required-features = ["http"]
