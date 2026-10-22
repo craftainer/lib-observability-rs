@@ -1,0 +1,172 @@
+# Run with prek (https://prek.j178.dev/, a Rust, drop-in-compatible
+# reimplementation of pre-commit — see CLAUDE.md for why) or with the
+# classic `pre-commit` CLI; both read this exact file.
+#
+# Fast, basic checks run on every commit. Every hook also carries the
+# "manual" stage, so `prek run --hook-stage manual --all-files` runs
+# everything at once regardless of which git hook would normally trigger
+# it. An instance layers its own language-specific hooks (ruff/mypy/
+# pytest, cargo fmt/clippy, golangci-lint, eslint/tsc, tflint, ...) onto
+# this file's `repos:` list — see docs/TEMPLATE.md's "Checks" section.
+default_install_hook_types:
+  - pre-commit
+  - pre-push
+  - commit-msg
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        stages: [pre-commit, manual]
+      - id: end-of-file-fixer
+        stages: [pre-commit, manual]
+      - id: check-yaml
+        stages: [pre-commit, manual]
+      - id: check-toml
+        stages: [pre-commit, manual]
+      - id: check-json
+        stages: [pre-commit, manual]
+      - id: check-added-large-files
+        stages: [pre-commit, manual]
+      - id: check-merge-conflict
+        stages: [pre-commit, manual]
+      - id: mixed-line-ending
+        stages: [pre-commit, manual]
+      - id: debug-statements
+        stages: [pre-commit, manual]
+      - id: detect-private-key
+        stages: [pre-commit, manual]
+
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.4.0
+    hooks:
+      # No "manual" stage here, unlike every other hook in this file: this
+      # one needs the actual commit-message file git passes at the
+      # commit-msg stage, which "prek run --all-files --hook-stage manual"
+      # has no equivalent for.
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+
+  - repo: local
+    hooks:
+      - id: template-sync-manifest
+        name: template-sync-manifest (every tracked path classified)
+        entry: python3 .github/scripts/template_sync_manifest.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, manual]
+
+      - id: devcontainer-lock
+        name: devcontainer-lock (lockfile matches devcontainer.json features)
+        entry: python3 .github/scripts/check_devcontainer_lock.py
+        language: system
+        files: ^\.devcontainer/devcontainer(-lock)?\.json$
+        pass_filenames: false
+        stages: [pre-commit, manual]
+
+  # The Rust gates. Tools come from the pinned toolchain
+  # (rust-toolchain.toml, scripts/develop.d/10-rust.sh); tool flags were
+  # checked against each tool's docs (cargo-llvm-cov /taiki-e/cargo-llvm-cov,
+  # cargo-deny /embarkstudios/cargo-deny, cargo-semver-checks
+  # /obi1kenobi/cargo-semver-checks on context7).
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt --check
+        entry: cargo fmt --all --check
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, manual]
+
+      - id: cargo-clippy
+        name: cargo clippy -D warnings
+        entry: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, manual]
+
+      - id: cargo-lock-check
+        name: Cargo.lock is up to date
+        # Without --no-deps, `cargo metadata` resolves the dependency graph,
+        # and --locked then fails instead of rewriting a Cargo.lock that no
+        # longer matches Cargo.toml (Cargo Book: "Cargo attempted to change
+        # the lock file due to a different dependency resolution"). With
+        # --no-deps nothing is resolved, so a stale lock would pass.
+        entry: bash -c 'cargo metadata --locked --format-version 1 >/dev/null' --
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push, manual]
+
+      - id: cargo-doc
+        name: cargo doc (rustdoc warnings are errors)
+        entry: env RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps --all-features --locked
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push, manual]
+
+      - id: cargo-llvm-cov
+        name: cargo llvm-cov (100% line-coverage gate)
+        # Runs the unit and integration tiers; tests/ itself
+        # is excluded from the measured lines by cargo-llvm-cov's defaults.
+        entry: cargo llvm-cov --workspace --all-features --locked --fail-under-lines 100
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push, manual]
+
+      - id: cargo-test-doc
+        name: cargo test --doc
+        # llvm-cov does not run doctests on stable.
+        entry: cargo test --workspace --all-features --locked --doc
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push, manual]
+
+      - id: cargo-deny
+        name: cargo deny check (licenses, advisories, bans, sources)
+        entry: cargo deny --locked check
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push, manual]
+
+      - id: cargo-semver-checks
+        name: cargo semver-checks (only once a baseline is published)
+        # The baseline is the latest release on crates.io. A crate's first
+        # release (and this template) has none, so a 404 from the sparse
+        # index skips with a message; any other failure is an error. The
+        # name and index URL come from scripts/crate_info.py (a virtual
+        # workspace sets CRATE). --release-type is explicit because the
+        # in-git version is a permanent 0.0.0 (the tag is the real version),
+        # which cargo-semver-checks would otherwise treat as "no bump" and
+        # demand a major-level check for. Default `minor`; a maintainer
+        # planning a breaking release sets SEMVER_RELEASE_TYPE=major, a
+        # patch-only one `patch`.
+        entry: >-
+          bash -c 'info=$(python3 -I scripts/crate_info.py index-info) || exit 1;
+          read -r name url <<<"$info";
+          code=$(curl -sS -o /dev/null -w "%{http_code}" "$url") || { echo "semver-checks: could not reach $url (curl exit $?)" >&2; exit 1; };
+          case $code in
+          200) exec cargo semver-checks --workspace --release-type "${SEMVER_RELEASE_TYPE:-minor}";;
+          404) echo "semver-checks: no published baseline for $name on crates.io; skipping";;
+          *) echo "semver-checks: crates.io index returned HTTP $code" >&2; exit 1;;
+          esac' --
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push, manual]
+
+      - id: crate-info-tests
+        name: scripts/crate_info.py tests
+        entry: python3 -I scripts/test_crate_info.py
+        language: system
+        pass_filenames: false
+        files: ^scripts/(crate_info|test_crate_info)\.py$
+        stages: [pre-commit, manual]

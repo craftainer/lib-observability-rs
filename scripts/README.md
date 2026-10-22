@@ -1,0 +1,37 @@
+# scripts/
+
+- `develop.sh` — `../.devcontainer/Dockerfile`'s `develop`-stage setup: installs `prek`,
+  the Claude Code CLI, `snip` and the GitHub CLI (`gh`), the only tooling this template requires
+  regardless of instance language. An instance adds its own language
+  runtime/tooling install on top, either by extending this script or
+  copying its shape into a second script. Prefer the hook below over
+  either.
+- `post-create.sh` — the devcontainer's `postCreateCommand`: git
+  `safe.directory`, `prek install`, then every `post-create.d/*.sh`.
+- `crate_info.py` (+ `test_crate_info.py`, run by a hook) — the one place that
+  reads the crate name and version from `Cargo.toml` and computes a crate's
+  crates.io sparse-index URL and published versions; the Makefile, the
+  release scripts and the semver-checks hook call it.
+- `release-check.sh`, `release-publish.sh`, `release-stamped.sh`,
+  `release-stamp-version.py` — the `Makefile`'s release contract
+  (`docs/TEMPLATE.md`, "Rust crate template notes"): `release-check.sh`
+  smoke-tests the packaged and published crate, `release-publish.sh` runs
+  `cargo publish` with a bootstrap token or crates.io trusted publishing,
+  `release-stamped.sh` runs a command with `RELEASE_VERSION` stamped into
+  `Cargo.toml`/`Cargo.lock` (restored afterwards) using
+  `release-stamp-version.py`.
+- `develop.d/`, `post-create.d/` — instance hook directories, empty apart
+  from their own `README.md`; see `docs/TEMPLATE.md`'s "Instance extension
+  points".
+
+## Do
+
+- Keep this script's own tools pinned to an exact version (a `# renovate:`
+  ARG in `../.devcontainer/Dockerfile`) and checksum-verified where the upstream project
+  publishes checksums, matching the pattern each install step here already
+  follows.
+
+## Don't
+
+- Add a language runtime or stack-specific tool here — that belongs in the
+  instance's own layer (`develop.d/`), not the base template's.

@@ -1,0 +1,46 @@
+# Cargo workspace with one example library crate. The root package is the
+# crate; an instance that grows into several crates adds them under
+# crates/ and to `members`. See docs/TEMPLATE.md.
+[workspace]
+resolver = "3"
+members = ["."]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+# Matches rust-toolchain.toml (major.minor is enough for MSRV semantics).
+rust-version = "1.99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/craftainer/template-rust-crate"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+[package]
+# The template carries its own name; an instance renames it to
+# `craftainer-<name>` (see README.md).
+name = "template-rust-crate"
+description = "Template repository for publishable Rust crates"
+readme = "README.md"
+# Stays 0.0.0 in git: the release tag is the real version. `publish` is left
+# at Cargo's default (true) and gated by the release contract's
+# CARGO_PUBLISH switch, not here. crates.io also wants `keywords` (max 5) and
+# `categories` (https://crates.io/category_slugs); an instance adds them.
+# Only what a dependent needs goes into the .crate (the default would ship
+# .devcontainer/, docs/, scripts/ and more).
+include = ["/src/", "/tests/", "/README.md", "/LICENSE"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,8 @@
+# Pins the compiler for every `cargo`/`rustc` call in the repo, so a
+# contributor outside the devcontainer gets the same toolchain. Keep the
+# channel in step with RUST_VERSION in scripts/develop.d/10-rust.sh and
+# `rust-version` in Cargo.toml (the latter only needs the major.minor).
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt", "llvm-tools-preview"]
+profile = "minimal"
