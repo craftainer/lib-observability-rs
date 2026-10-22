@@ -20,6 +20,11 @@
 //! [`configure_logging`] returns a [`LoggingGuard`]: keep it alive for the
 //! life of `main`, call [`LoggingGuard::shutdown`] before exiting (or let it
 //! drop, which does the same).
+//!
+//! Both block the calling thread until the export finishes or the SDK's
+//! timeout passes (a dead collector costs that timeout). In an async `main`,
+//! call `shutdown` through `tokio::task::spawn_blocking` (or after the
+//! server has stopped), not from a worker thread you cannot spare.
 
 #[cfg(feature = "otel")]
 mod otlp;
@@ -66,11 +71,19 @@ impl LoggingGuard {
     pub fn shutdown(&self) -> Result<(), Error> {
         #[cfg(feature = "otel")]
         if let Some(provider) = &self.provider {
-            provider
-                .shutdown()
-                .map_err(|err| Error::Flush(err.to_string()))?;
+            shutdown_result(provider.shutdown())?;
         }
         Ok(())
+    }
+}
+
+/// A second shutdown is harmless, so "already shut down" is not an error.
+#[cfg(feature = "otel")]
+fn shutdown_result(result: opentelemetry_sdk::error::OTelSdkResult) -> Result<(), Error> {
+    use opentelemetry_sdk::error::OTelSdkError;
+    match result {
+        Ok(()) | Err(OTelSdkError::AlreadyShutdown) => Ok(()),
+        Err(err) => Err(Error::Flush(err.to_string())),
     }
 }
 
@@ -180,5 +193,16 @@ mod tests {
         guard.force_flush().unwrap();
         guard.shutdown().unwrap();
         guard.shutdown().unwrap();
+    }
+
+    #[cfg(feature = "otel")]
+    #[test]
+    fn only_a_real_shutdown_failure_is_an_error() {
+        use opentelemetry_sdk::error::OTelSdkError;
+        assert!(shutdown_result(Ok(())).is_ok());
+        assert!(shutdown_result(Err(OTelSdkError::AlreadyShutdown)).is_ok());
+        let err =
+            shutdown_result(Err(OTelSdkError::InternalFailure("boom".to_string()))).unwrap_err();
+        assert!(matches!(err, Error::Flush(m) if m.contains("boom")));
     }
 }

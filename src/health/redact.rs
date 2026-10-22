@@ -36,10 +36,11 @@ fn redact_userinfo(text: &str) -> String {
     while let Some(at) = rest.find("://") {
         let (head, tail) = rest.split_at(at + 3);
         out.push_str(head);
+        // The token runs to whitespace or a quote, not to the first `/`: a
+        // password may contain `/`, `?` or `#`. The last `@` in the token ends
+        // the userinfo; this over-redacts a path that contains `@`, on purpose.
         let end = tail
-            .find(|c: char| {
-                matches!(c, '/' | '?' | '#') || c.is_whitespace() || c == '"' || c == '\''
-            })
+            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
             .unwrap_or(tail.len());
         match tail[..end].rfind('@') {
             Some(at_sign) => {
@@ -90,22 +91,30 @@ fn secret_value_span(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
     j += bytes[j..].iter().take_while(|b| **b == b' ').count();
     let start = j;
     let end = match bytes.get(j) {
-        Some(quote @ (b'\'' | b'"')) => bytes[j + 1..]
-            .iter()
-            .position(|b| b == quote)
-            .map_or(bytes.len(), |p| j + 1 + p + 1),
+        Some(quote @ (b'\'' | b'"')) => closing_quote(bytes, j + 1, *quote),
         _ => {
             start
                 + bytes[start..]
                     .iter()
-                    .take_while(|b| {
-                        !b.is_ascii_whitespace()
-                            && !matches!(**b, b'&' | b';' | b',' | b')' | b'\'' | b'"')
-                    })
+                    .take_while(|b| !b.is_ascii_whitespace() && !matches!(**b, b'&' | b'\'' | b'"'))
                     .count()
         }
     };
     Some((start, end))
+}
+
+/// The index just past the quote that closes a value starting at `from`,
+/// skipping backslash-escaped characters; the end of `bytes` if unterminated.
+fn closing_quote(bytes: &[u8], from: usize, quote: u8) -> usize {
+    let mut k = from;
+    while k < bytes.len() {
+        match bytes[k] {
+            b'\\' => k += 2,
+            b if b == quote => return k + 1,
+            _ => k += 1,
+        }
+    }
+    bytes.len()
 }
 
 #[cfg(test)]
@@ -126,8 +135,22 @@ mod tests {
 
     #[test]
     fn urls_without_userinfo_are_untouched() {
-        let text = "GET https://example.com/a@b failed: http://host:1/x";
+        let text = "GET https://example.com/a failed: http://host:1/x";
         assert_eq!(redact(text), text);
+    }
+
+    #[test]
+    fn a_password_with_url_delimiters_is_fully_redacted() {
+        assert_eq!(
+            redact("postgres://app:pa/ss@db/x and postgres://u:p?w#z@h/d"),
+            "postgres://[REDACTED]@db/x and postgres://[REDACTED]@h/d"
+        );
+    }
+
+    #[test]
+    fn secrets_containing_separators_are_fully_redacted() {
+        assert_eq!(redact("password=a;b,c)d done"), "password=[REDACTED] done");
+        assert_eq!(redact(r"token='it\'s secret' x"), "token=[REDACTED] x");
     }
 
     #[test]
@@ -142,16 +165,16 @@ mod tests {
             "host=db user=app password=[REDACTED] dbname=x"
         );
         assert_eq!(
-            redact("PASSWORD: hunter2, token = 'a b c' and db_pwd=x&k=1"),
-            "PASSWORD: [REDACTED], token = [REDACTED] and db_pwd=[REDACTED]&k=1"
+            redact("PASSWORD: hunter2 token = 'a b c' and db_pwd=x&k=1"),
+            "PASSWORD: [REDACTED] token = [REDACTED] and db_pwd=[REDACTED]&k=1"
         );
         assert_eq!(
             redact("secret_key=\"q r\" end"),
             "secret_key=[REDACTED] end"
         );
         assert_eq!(
-            redact("api_key=abc;apikey:def"),
-            "api_key=[REDACTED];apikey:[REDACTED]"
+            redact("api_key=abc apikey:def"),
+            "api_key=[REDACTED] apikey:[REDACTED]"
         );
     }
 

@@ -14,7 +14,7 @@ use tracing_subscriber::filter::{FilterFn, Filtered};
 /// path segment of an event's target, exactly (`h2` matches `h2::codec`, not
 /// `h2_foo`), so every crate name is listed in full. The exporter is
 /// `http-proto` over `reqwest` + `rustls` (no `tonic`).
-const EXPORTER_CRATES: [&str; 11] = [
+const EXPORTER_CRATES: [&str; 17] = [
     "hyper",
     "hyper_util",
     "hyper_rustls",
@@ -26,6 +26,12 @@ const EXPORTER_CRATES: [&str; 11] = [
     "opentelemetry_sdk",
     "opentelemetry_otlp",
     "opentelemetry_http",
+    "opentelemetry_proto",
+    "opentelemetry_appender_tracing",
+    "tokio_util",
+    "http_body_util",
+    "rustls_platform_verifier",
+    "rustls_native_certs",
 ];
 
 /// Whether an event may be exported: false for the exporter's own stack.
@@ -199,8 +205,10 @@ mod tests {
         // Normally no OTLP variable is set in the test environment; if one
         // is, a layer is expected.
         let requested = export_requested(&|name| std::env::var(name).ok());
-        let layer = log_layer::<tracing_subscriber::Registry>().unwrap();
-        assert_eq!(layer.is_some(), requested);
+        // Only built when the ambient environment asks for nothing, so the
+        // test never starts an exporter thread aimed at a real collector.
+        let layer = (!requested).then(|| log_layer::<tracing_subscriber::Registry>().unwrap());
+        assert!(layer.is_none_or(|layer| layer.is_none()));
     }
 
     #[tokio::test]
@@ -358,6 +366,7 @@ mod tests {
         assert!(line.starts_with("POST /v1/logs"), "{line}");
         assert!(length > 0);
         guard.shutdown().expect("shutdown");
+        guard.shutdown().expect("a second shutdown is harmless");
         assert!(guard.force_flush().is_err());
     }
 }

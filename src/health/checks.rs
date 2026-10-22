@@ -129,7 +129,8 @@ impl HealthCheck for DatabaseHealthCheck {
 /// The connection is a [`redis::aio::ConnectionManager`], opened on the
 /// first check and reused by every later one; it reconnects by itself after
 /// an outage. (`lib-observability-py` opens and closes a client per check;
-/// this keeps one.)
+/// this keeps one.) The connection belongs to the Tokio runtime that ran the
+/// first check, so use one check value per runtime.
 #[cfg(feature = "redis")]
 pub struct RedisHealthCheck {
     redis_url: String,

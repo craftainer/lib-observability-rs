@@ -118,7 +118,8 @@ impl HealthRegistry {
 
     /// Runs every check concurrently and returns `(name, result)` in
     /// registration order. A check that exceeds its timeout is reported
-    /// unhealthy with a fixed detail, and its future is dropped.
+    /// unhealthy with a fixed detail, and its future is dropped. Needs a Tokio
+    /// runtime with the time driver (axum's own requirement already).
     pub async fn run_all(&self) -> Vec<(String, HealthCheckResult)> {
         let futures = self.checks.iter().map(|check| async move {
             let limit = check.timeout().unwrap_or(self.default_timeout);
