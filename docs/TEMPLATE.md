@@ -40,7 +40,7 @@ artifact on top of the shape described here.
   an instance hook directory (`develop.d/`, `post-create.d/`); see
   `scripts/README.md` and "Instance extension points" below.
 - `Makefile` — the release contract `release.yml` drives
-  (`build`/`sbom`/`release-assets`/`publish`); here it packages the crate
+  (`build`/`sbom`/`release-assets`/`publish`/`publish-packages`); here it packages the crate
   — see "Release: a Makefile contract" and "Rust crate template notes"
   below.
 - `.pre-commit-config.yaml` — git hooks, run by `prek` or `pre-commit`;
@@ -135,22 +135,50 @@ unchanged across every instance), then drives these targets:
 | Target | Runs | Where | Env available |
 |---|---|---|---|
 | `release-arches` | once, first | host runner | none; must print a JSON array on stdout, e.g. `["amd64"]` |
-| `build`, `sbom`, `release-assets`, `publish` | once **per arch**, in that order | host runner for that arch | `RELEASE_VERSION`, `RELEASE_TAG`, `RELEASE_ARCH`, `OCI_REGISTRY`, `OCI_IMAGE_NAME`, `OCI_REGISTRY_USERNAME`, `OCI_REGISTRY_PASSWORD`, `PYPI_PUBLISH`, `NPM_PUBLISH`, `CARGO_PUBLISH`, all `GITHUB_*`; on `publish` only, `NPM_TOKEN` and `CARGO_REGISTRY_TOKEN` (bootstrap secrets; empty when unset, so treat empty as absent) |
-| `release-check` | once, after all arches | **inside the devcontainer** (`devcontainers/ci`), stack up | `RELEASE_VERSION`, `RELEASE_TAG`, `PYPI_PUBLISH`, `NPM_PUBLISH`, `CARGO_PUBLISH` |
+| `build`, `sbom`, `release-assets`, `publish` | once **per arch**, in that order | host runner for that arch | `RELEASE_VERSION`, `RELEASE_TAG`, `RELEASE_ARCH`, `OCI_REGISTRY`, `OCI_IMAGE_NAME`, `OCI_REGISTRY_USERNAME`, `OCI_REGISTRY_PASSWORD`, all `GITHUB_*`; no package-registry variables or secrets, and no OIDC token |
+| `publish-packages` | once, after all arches, **only if** `PYPI_PUBLISH`, `NPM_PUBLISH` or `CARGO_PUBLISH` is set | host runner (own job, with `id-token: write`) | `RELEASE_VERSION`, `RELEASE_TAG`, `PYPI_PUBLISH`, `NPM_PUBLISH`, `CARGO_PUBLISH`, all `GITHUB_*`, the OIDC token, `NPM_TOKEN` and `CARGO_REGISTRY_TOKEN` (bootstrap secrets; empty when unset, so treat empty as absent); `dist/` holds every arch leg's files |
+| `release-check` | once, after all arches | **inside the devcontainer** (`devcontainers/ci`), stack up | `RELEASE_VERSION`, `RELEASE_TAG`, `GITHUB_REPOSITORY`, `PYPI_PUBLISH`, `NPM_PUBLISH`, `CARGO_PUBLISH` |
 | `finalize` | once, after `release-check` | host runner | same as per-arch minus `RELEASE_ARCH` |
 
 What each target is for: `build` produces the release artifact(s) (an
 image, `cargo build --release`, `npm pack`, `helm package`, ...); `sbom`
 writes an SBOM for what `build` produced; `release-assets` populates
 `dist/` (gitignored) with every file to attach to the GitHub release;
-`publish` pushes to whatever registry applies, skipping cleanly when its
-variable/secret isn't set; `release-check` runs checks that need the
+`publish` pushes the per-arch image to its registry, skipping cleanly when
+`OCI_REGISTRY` isn't set; `publish-packages` uploads packages (PyPI, npm,
+crates.io) once per release, never once per arch, and runs in a job that
+exists only for instances that set one of the `*_PUBLISH` variables, so
+an image-only instance never has `id-token: write` or a package secret
+(base's default fails if any `*_PUBLISH` variable is set, so an instance
+can't silently skip it; with none set it is a no-op; it runs on a fresh runner with a checkout and the
+downloaded `dist/` only, so it uploads from `dist/` and sets up its own
+tooling); `release-check` runs checks that need the
 backing services (e.g. tests producing a coverage report); `finalize`
 does cross-arch work such as combining per-arch registry tags into one
 multi-arch manifest list. `RELEASE_VERSION` (e.g. `1.2.3` or
 `1.2.3-alpha.1`) and `RELEASE_TAG` (the same, `v`-prefixed) are for
 embedding or tagging with the version. A single-arch no-op is the
 default: `release-arches` prints `["amd64"]`.
+
+**Upgrading a package instance.** Before this contract, `publish` also
+uploaded packages, once per arch. Now `publish` is image-only and gets no
+`*_PUBLISH` variables, secrets or OIDC token. An instance that publishes
+packages must move that upload from `publish` into a new
+`publish-packages` target (reading artifacts from `dist/`, setting up its
+own tooling). Until it does, base's default `publish-packages` (if the
+instance kept it) fails with a message naming the variable that is set;
+an instance whose Makefile has no such target fails with `make: No rule
+to make target`. Either way the release stops instead of skipping the
+upload.
+
+**Package instance checklist.** An instance that publishes a package also:
+sets `repository`, homepage and bugs URLs in its package manifest
+(`package.json`, `pyproject.toml`, `Cargo.toml`) -- npm provenance
+verifies the repository URL against the publishing repository, and the
+other registries show these links to users; and implements `publish-packages` itself, which replaces base's
+default (the `DefaultPublishPackagesTest` in `.github/scripts` skips itself
+once the default message is gone). `release-check` receives
+`GITHUB_REPOSITORY`, so an instance can run repository guards there.
 
 `dist/` rules: each arch leg's `dist/` is uploaded as artifact
 `release-assets-<arch>`, and the final job downloads all of them into one
@@ -293,8 +321,9 @@ additions.
   `[workspace.package]`) and `Cargo.lock` for the duration of the command
   and restores them, then runs `cargo package --locked` and copies the
   `.crate` into `dist/`. `make sbom` runs Syft over the unpacked crate
-  (SPDX JSON). `make publish` skips unless `CARGO_PUBLISH` is non-empty;
-  with it, it authenticates with the bootstrap `CARGO_REGISTRY_TOKEN` if
+  (SPDX JSON). `make publish` is a no-op (image-only, per arch).
+  `make publish-packages` (once, after every arch leg, in its own job)
+  skips with a `::warning::` unless `CARGO_PUBLISH` is non-empty; with it, it authenticates with the bootstrap `CARGO_REGISTRY_TOKEN` if
   one is set (a crate's first release), otherwise by crates.io trusted
   publishing (below). `make release-check` runs in the devcontainer: it
   unpacks `dist/*.crate`, runs its doctests and builds a throwaway binary
@@ -304,24 +333,39 @@ additions.
   ends in a notice and a pass, not a failure. `make build` finds the
   `.crate` through `cargo metadata`'s `target_directory`, so a
   `CARGO_TARGET_DIR` (or `build.target-dir`) outside the repo works.
-  `make publish` is idempotent: a version already in the sparse index is
+  `make publish-packages` is idempotent: a version already in the sparse index is
   skipped with a notice, so re-running a failed release job completes it.
-  For a virtual workspace set `CARGO_PACKAGE` (both `build` and `publish`
-  then pass `-p`).
+  For a virtual workspace set `CARGO_PACKAGE` (both `build` and
+  `publish-packages` then pass `-p`).
 - **Trusted publishing from `make`.** `release.yml` is base-owned and can't
   add the `rust-lang/crates-io-auth-action` step, so `scripts/release-publish.sh`
   does what that action does: request a GitHub OIDC token for audience
   `crates.io` (`ACTIONS_ID_TOKEN_REQUEST_URL` + `&audience=crates.io`,
-  Bearer `ACTIONS_ID_TOKEN_REQUEST_TOKEN`; present because the build job
-  has `id-token: write`), `POST https://crates.io/api/v1/trusted_publishing/tokens`
+  Bearer `ACTIONS_ID_TOKEN_REQUEST_TOKEN`; present because the
+  `publish-packages` job has `id-token: write`; the per-arch `build` job has
+  none), `POST https://crates.io/api/v1/trusted_publishing/tokens`
   with `{"jwt": ...}` for a token valid 30 minutes, publish with it as
   `CARGO_REGISTRY_TOKEN`, and `DELETE` the same URL (Bearer token) to
   revoke it. Tokens are masked in the log and never put on a command line.
-  `RELEASE_DRY_RUN=1 CARGO_PUBLISH=1 make publish` prints which path is
+  `RELEASE_DRY_RUN=1 CARGO_PUBLISH=1 make publish-packages` prints which path is
   chosen and every step without any network call or publish.
-- **Runner toolchain.** `build` and `publish` run on the bare runner, not in
-  the devcontainer: the runner's `rustup` installs the pinned toolchain from
+- **Runner toolchain.** `build` and `publish-packages` run on bare runners, not
+  in the devcontainer: the runner's `rustup` installs the pinned toolchain from
   `rust-toolchain.toml` (`rustup toolchain install`), and `docker` runs Syft.
+  `publish-packages` has a checkout and the downloaded `dist/` only. Cargo
+  cannot upload a prebuilt `.crate`, so it stamps the version again and runs
+  `cargo publish` from the checkout; `release-publish.sh` uses `dist/`'s
+  `.crate` to tell whether the version is already on crates.io with the same
+  contents.
+- **Syncing an existing crate instance** (from a template older than 1.1.0,
+  which published from `publish` and so needed base 1.9.0's contract). The
+  `Makefile` and `scripts/release-*.sh` are replace tier, so one sync brings
+  in the new `publish-packages` target together with base's `release.yml`,
+  whose `build` job no longer has `id-token: write` or `CARGO_REGISTRY_TOKEN`.
+  Nothing to do by hand unless the instance edited its `Makefile`: then
+  rename its `publish` to `publish-packages`, add it to `.PHONY` and make
+  `publish` a no-op. An instance that stays on the old `Makefile` fails
+  loudly at `publish-packages` when `CARGO_PUBLISH` is set.
 
 ## Code style
 

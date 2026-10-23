@@ -68,7 +68,8 @@ Practices below are distilled from Anthropic's own Claude Code guidance
   --all-files --hook-stage manual`, or whatever lint/type-check/test/e2e
   commands the instance layers on top — and you've shown the actual
   output, not just asserted success. "Looks done" is not a verification
-  step.
+  step. For orchestrated plan work, the executor or lander produces and
+  shows the check output and the orchestrator relays it.
 - **Address root causes.** Fix the underlying issue a failing check
   reports, not the check itself — don't silence a linter/type-checker
   finding with a broad suppression comment just to make output green;
@@ -92,9 +93,11 @@ Practices below are distilled from Anthropic's own Claude Code guidance
 - **Execute multi-item work as an orchestrator.** When executing a
   `docs/plans/` plan, or any task that splits into several independent
   items (closing multiple test coverage gaps, for example), the main
-  session orchestrates rather than implementing, through
-  `plan-executor` subagents (`.claude/agents/plan-executor.md`). Use the
-  `plan-execution` skill (`.claude/skills/plan-execution/`) for how.
+  session only orchestrates, deciding and raising user gates; executors
+  and landers (`plan-executor` subagents,
+  `.claude/agents/plan-executor.md`) implement, review, merge, verify
+  and release. Use the `plan-execution` skill
+  (`.claude/skills/plan-execution/`) for how.
 - **Flag devcontainer changes as needing a rebuild.** Editing anything
   under `.devcontainer/` (compose files, `stack/`, Dockerfiles) doesn't
   take effect in the running container — tell the user a rebuild is

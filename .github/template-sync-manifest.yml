@@ -94,6 +94,7 @@ replace:
   - Makefile
   - scripts/crate_info.py
   - scripts/test_crate_info.py
+  - scripts/test_release_contract.py
   - scripts/release-check.sh
   - scripts/release-publish.sh
   - scripts/release-stamp-version.py

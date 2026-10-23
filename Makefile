@@ -4,7 +4,7 @@
 # on one arch. CARGO_PUBLISH (a repo variable; non-empty) turns `publish` on;
 # unset skips it. Credentials: see scripts/release-publish.sh.
 
-.PHONY: release-arches build sbom release-assets publish release-check finalize
+.PHONY: release-arches build sbom release-assets publish publish-packages release-check finalize
 
 # Crate name and version come from scripts/crate_info.py (the one place that
 # reads Cargo.toml). An instance that renames the crate needs no change here;
@@ -59,12 +59,23 @@ release-assets:
 		test -f "$$f" || { echo "missing release asset: $$f" >&2; exit 1; }; \
 	done; ls dist
 
-# Credentials and the dry-run switch: scripts/release-publish.sh.
+# Per arch, image registries only: this template ships no image.
 publish:
+	@echo "source crate -- no image to publish (see publish-packages)."
+
+# Once, in release.yml's `publish-packages` job, which exists only when
+# CARGO_PUBLISH (or another *_PUBLISH variable) is set and has `id-token:
+# write` plus CARGO_REGISTRY_TOKEN. That job is a bare runner: a checkout plus
+# dist/ (the build leg's .crate), with the runner's own rustup/cargo, so the
+# pinned toolchain is installed first, as in `build`. Credentials and the
+# dry-run switch: scripts/release-publish.sh, which checks dist/'s .crate
+# against the index and then runs `cargo publish`.
+publish-packages:
 ifeq ($(CARGO_PUBLISH),)
-	@echo "CARGO_PUBLISH not set -- skipping publish."
+	@echo "::warning::CARGO_PUBLISH is not set -- the crate was NOT published to crates.io."
 else
 	$(REQUIRE_CRATE)
+	@if command -v rustup >/dev/null 2>&1; then rustup toolchain install --profile minimal --no-self-update; fi
 	CARGO_PACKAGE='$(CARGO_PACKAGE)' CRATE='$(CRATE)' scripts/release-stamped.sh scripts/release-publish.sh
 endif
 
