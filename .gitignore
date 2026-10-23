@@ -117,5 +117,7 @@ $RECYCLE.BIN/
 # (https://doc.rust-lang.org/cargo/faq.html#why-have-cargolock-in-version-control).
 target/
 
-# Bytecode of the release helper scripts (scripts/*.py).
+# Bytecode of the release helper scripts (scripts/*.py) and the
+# scripts-tests hook's in-tree runs.
 __pycache__/
+*.pyc

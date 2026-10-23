@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# `make publish` (when CARGO_PUBLISH is set): cargo publish to crates.io,
+# `make publish-packages` (when CARGO_PUBLISH is set): cargo publish to crates.io,
 # authenticated either by a bootstrap token or by crates.io trusted
 # publishing. Runs under release-stamped.sh, so Cargo.toml carries the
 # release version.

@@ -77,7 +77,7 @@ and the template-sync manifest check.
 
 ## Publishing to crates.io
 
-`make publish` is a no-op until you opt in, per repository, by setting the
+`make publish-packages` is a no-op (with a `::warning::` in the log) until you opt in, per repository, by setting the
 repository variable `CARGO_PUBLISH` to any non-empty value (Settings,
 Secrets and variables, Actions, Variables). The version lives only in the
 git tag `release.yml` computes; `Cargo.toml` stays at `0.0.0` and
@@ -90,13 +90,13 @@ short-lived bootstrap token, and trusted publishing takes over after it:
 1. Create a crates.io API token scoped to the new crate name
    (`publish-new` only for the first release) with a short expiry, and store
    it as the repository secret `CARGO_REGISTRY_TOKEN`.
-2. Set `CARGO_PUBLISH=1` and run the release workflow. `make publish` sees
+2. Set `CARGO_PUBLISH=1` and run the release workflow. `make publish-packages` sees
    the token and publishes with it.
 3. On crates.io, open the crate's Settings, Trusted Publishing, and add a
    GitHub publisher: the owner, the repository, the workflow `release.yml`,
    and no environment.
 4. Delete the `CARGO_REGISTRY_TOKEN` secret and revoke the token. From the
-   next release, `make publish` finds no token and exchanges the job's
+   next release, `make publish-packages` finds no token and exchanges the job's
    GitHub OIDC identity for a 30-minute crates.io token, publishes with it
    and revokes it.
 
