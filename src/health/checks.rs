@@ -419,14 +419,15 @@ mod tests {
             // subscriber's registration rebuilt the cache, leaving the event
             // disabled (about 4% of parallel runs). Once that thread's store
             // has landed, a rebuild fixes the cache for good, so log again
-            // after a rebuild until the event is captured.
+            // after a rebuild until the event is captured (at most 50 tries; the
+            // assertions below then report what was logged).
             (0..50).any(|_| {
                 tracing::callsite::rebuild_interest_cache();
                 failure(
                     "database",
                     "error connecting to postgres://app:hunter2@db/x password=hunter3",
                 );
-                !capture.0.lock().unwrap().is_empty()
+                String::from_utf8_lossy(&capture.0.lock().unwrap()).contains("health check failed")
             });
         });
         let logged = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
