@@ -412,10 +412,23 @@ mod tests {
             .with_writer(move || writer.clone())
             .finish();
         tracing::subscriber::with_default(subscriber, || {
-            failure(
-                "database",
-                "error connecting to postgres://app:hunter2@db/x password=hunter3",
-            );
+            // `failure`'s callsite is shared with the tests that call it
+            // without a subscriber, on other threads. A thread that
+            // registered the callsite just before this subscriber existed
+            // can store its "nobody is interested" interest just after this
+            // subscriber's registration rebuilt the cache, leaving the event
+            // disabled (about 4% of parallel runs). Once that thread's store
+            // has landed, a rebuild fixes the cache for good, so log again
+            // after a rebuild until the event is captured (at most 50 tries; the
+            // assertions below then report what was logged).
+            (0..50).any(|_| {
+                tracing::callsite::rebuild_interest_cache();
+                failure(
+                    "database",
+                    "error connecting to postgres://app:hunter2@db/x password=hunter3",
+                );
+                String::from_utf8_lossy(&capture.0.lock().unwrap()).contains("health check failed")
+            });
         });
         let logged = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
         assert!(logged.contains("health check failed"), "{logged}");
