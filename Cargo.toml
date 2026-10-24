@@ -49,7 +49,7 @@ futures = { version = "=0.3.34", default-features = false, features = ["std", "a
 serde = { version = "=1.0.229", features = ["derive"] }
 thiserror = "=2.0.20"
 # `time` for the per-check timeout; `sync` for the Redis check's lazy connection.
-tokio = { version = "=1.53.1", default-features = false, features = ["sync", "time"] }
+tokio = { version = "=1.53.3", default-features = false, features = ["sync", "time"] }
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["env-filter", "fmt", "json", "registry", "std"] }
 
@@ -72,7 +72,7 @@ opentelemetry_sdk = { version = "=0.32.1", optional = true, default-features = f
 [dev-dependencies]
 aws-config = "=1.8.11"
 serde_json = "=1.0.151"
-tokio = { version = "=1.53.1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "=1.53.3", features = ["macros", "rt-multi-thread", "time"] }
 tower = { version = "=0.5.3", features = ["util"] }
 
 [features]
