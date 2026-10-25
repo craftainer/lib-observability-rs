@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for the Makefile's publish/publish-packages split; run with `python3 -I scripts/test_release_contract.py`."""
+"""Tests for the Makefile's publish/publish-packages/verify-published split; run with `python3 -I scripts/test_release_contract.py`."""
 
 import os
 import pathlib
@@ -44,6 +44,26 @@ class ReleaseContract(unittest.TestCase):
     def test_publish_packages_is_phony(self) -> None:
         result = make("-p", "-n", "publish-packages")
         self.assertRegex(result.stdout, r"(?m)^\.PHONY:.*\bpublish-packages\b")
+
+    def test_verify_published_unset_has_nothing_to_verify(self) -> None:
+        result = make("verify-published")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("nothing to verify", result.stdout)
+
+    def test_verify_published_set_runs_the_verify_script(self) -> None:
+        result = make("-n", "verify-published", CARGO_PUBLISH="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("scripts/release-verify-published.sh", result.stdout)
+        self.assertIn("rustup toolchain install", result.stdout)
+
+    def test_verify_published_is_phony(self) -> None:
+        result = make("-p", "-n", "verify-published")
+        self.assertRegex(result.stdout, r"(?m)^\.PHONY:.*\bverify-published\b")
+
+    def test_release_check_gates_the_release_so_it_skips_the_registry(self) -> None:
+        script = (ROOT / "scripts" / "release-check.sh").read_text()
+        self.assertNotIn("CARGO_PUBLISH", script)
+        self.assertNotIn("has-version", script)
 
 
 if __name__ == "__main__":

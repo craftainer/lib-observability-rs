@@ -4,7 +4,7 @@
 # on one arch. CARGO_PUBLISH (a repo variable; non-empty) turns `publish` on;
 # unset skips it. Credentials: see scripts/release-publish.sh.
 
-.PHONY: release-arches build sbom release-assets publish publish-packages release-check finalize
+.PHONY: release-arches build sbom release-assets publish publish-packages verify-published release-check finalize
 
 # Crate name and version come from scripts/crate_info.py (the one place that
 # reads Cargo.toml). An instance that renames the crate needs no change here;
@@ -79,8 +79,23 @@ else
 	CARGO_PACKAGE='$(CARGO_PACKAGE)' CRATE='$(CRATE)' scripts/release-stamped.sh scripts/release-publish.sh
 endif
 
-# Runs once after the arch leg, inside the devcontainer; dist/ holds the
-# downloaded .crate. See scripts/release-check.sh.
+# Once, in release.yml's `verify-published` job, after `publish-packages`
+# succeeded and only when a *_PUBLISH variable is set: builds a throwaway
+# crate that depends on the published version. A bare runner with no secrets
+# and the runner's own rustup/cargo, so the pinned toolchain is installed
+# first, as in `publish-packages`. See scripts/release-verify-published.sh.
+verify-published:
+ifeq ($(CARGO_PUBLISH),)
+	@echo "CARGO_PUBLISH is not set -- nothing to verify."
+else
+	$(REQUIRE_CRATE)
+	@if command -v rustup >/dev/null 2>&1; then rustup toolchain install --profile minimal --no-self-update; fi
+	CARGO_PACKAGE='$(CARGO_PACKAGE)' CRATE='$(CRATE)' scripts/release-verify-published.sh
+endif
+
+# Runs once after the arch leg, inside the devcontainer, and gates the GitHub
+# release and publishing; dist/ holds the downloaded .crate. Checks the local
+# crate only. See scripts/release-check.sh.
 release-check:
 	$(REQUIRE_CRATE)
 	CARGO_PACKAGE='$(CARGO_PACKAGE)' CRATE='$(CRATE)' scripts/release-check.sh
