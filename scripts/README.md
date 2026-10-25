@@ -16,10 +16,15 @@
   reads the crate name and version from `Cargo.toml` and computes a crate's
   crates.io sparse-index URL and published versions; the Makefile, the
   release scripts and the semver-checks hook call it.
-- `release-check.sh`, `release-publish.sh`, `release-stamped.sh`,
+- `release-check.sh`, `release-verify-published.sh`, `release-lib.sh`,
+  `release-publish.sh`, `release-stamped.sh`,
   `release-stamp-version.py` — the `Makefile`'s release contract
   (`docs/TEMPLATE.md`, "Rust crate template notes"): `release-check.sh`
-  smoke-tests the packaged and published crate, `release-publish.sh` (`make
+  smoke-tests the packaged crate (it gates the release, so only the local
+  artifact), `release-verify-published.sh` (`make verify-published`, after
+  `publish-packages`, only when a `*_PUBLISH` variable is set) builds a
+  throwaway crate against the version just published, with no secrets
+  (`release-lib.sh` holds the `probe` helper both use), `release-publish.sh` (`make
   publish-packages`) runs `cargo publish` with a bootstrap token or crates.io trusted publishing,
   `release-stamped.sh` runs a command with `RELEASE_VERSION` stamped into
   `Cargo.toml`/`Cargo.lock` (restored afterwards) using

@@ -7,6 +7,9 @@ Stdlib ``unittest`` only (see this directory's README); run with
 
 from __future__ import annotations
 
+import argparse
+import contextlib
+import io
 import os
 import re
 import shutil
@@ -15,6 +18,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import template_sync
 
@@ -50,8 +54,8 @@ class ApplyReplaceExecutableBitTest(unittest.TestCase):
         return template_sync.apply_replace(self.old, self.new, self.instance, {path})
 
     def test_same_content_gains_executable_bit(self) -> None:
-        # The v1.8.0 bug: the template fixed 644 -> 755 with no content change.
         """Same content, template executable: the instance copy becomes executable."""
+        # Regression: a template fix of 644 -> 755 with no content change.
         write(self.old / "s.sh", b"#!/bin/sh\n", 0o644)
         write(self.new / "s.sh", b"#!/bin/sh\n", 0o755)
         write(self.instance / "s.sh", b"#!/bin/sh\n", 0o644)
@@ -89,13 +93,277 @@ class ApplyReplaceExecutableBitTest(unittest.TestCase):
         self.assertEqual(self.apply("s.sh")["updated"], ["s.sh"])
         self.assertTrue(is_exec(self.instance / "s.sh"))
 
+    def test_symlinked_destination_is_not_chmodded_through(self) -> None:
+        """A symlinked destination is left alone: chmod would change its target."""
+        write(self.old / "s.sh", b"x\n", 0o644)
+        write(self.new / "s.sh", b"x\n", 0o755)
+        target = self.instance / "target.sh"
+        write(target, b"x\n", 0o644)
+        (self.instance / "s.sh").symlink_to(target)
+        self.assertEqual(self.apply("s.sh"), {"updated": [], "removed": []})
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o644)
+
+    def test_symlinked_destination_is_not_overwritten_through(self) -> None:
+        """Changed content never writes through a symlinked destination."""
+        write(self.old / "s.sh", b"a\n", 0o644)
+        write(self.new / "s.sh", b"b\n", 0o644)
+        target = self.instance / "target.sh"
+        write(target, b"a\n", 0o644)
+        (self.instance / "s.sh").symlink_to(target)
+        self.assertEqual(self.apply("s.sh"), {"updated": [], "removed": []})
+        self.assertEqual(target.read_bytes(), b"a\n")
+
+
+class TierPathsGlobTest(unittest.TestCase):
+    """``template_sync.tier_paths`` expands glob entries in every tier."""
+
+    def setUp(self) -> None:
+        """Create a template checkout with files for each tier."""
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        for rel in (
+            "scripts/release-a.sh",
+            "scripts/release-b.sh",
+            "scripts/other.sh",
+            "docs/adrs/0001-x.md",
+            "docs/adrs/README.md",
+            "cfg/one.json",
+            "cfg/sub/two.json",
+            ".git/config",
+        ):
+            write(self.root / rel, b"x\n", 0o644)
+
+    def paths(self, tier: str, patterns: list[str]) -> set[str]:
+        """Return ``tier_paths`` for a manifest holding ``patterns`` in ``tier``."""
+        tiers: dict[str, list[str]] = {"replace": [], "ignore": [], "merge": []}
+        tiers[tier] = patterns
+        return template_sync.tier_paths(self.root, tiers, tier)
+
+    def test_glob_in_each_tier(self) -> None:
+        """A glob entry expands to its files whichever tier it is in."""
+        for tier in ("replace", "merge", "ignore"):
+            self.assertEqual(
+                self.paths(tier, ["scripts/release-*.sh"]),
+                {"scripts/release-a.sh", "scripts/release-b.sh"},
+                tier,
+            )
+
+    def test_star_spans_directories_like_the_manifest(self) -> None:
+        """``*`` crosses ``/`` exactly as ``template_sync_manifest.matches`` does."""
+        self.assertEqual(
+            self.paths("replace", ["cfg/*.json"]), {"cfg/one.json", "cfg/sub/two.json"}
+        )
+
+    def test_bracket_glob(self) -> None:
+        """Character classes alongside ``*`` work (``docs/adrs/[0-9]*.md``)."""
+        self.assertEqual(self.paths("merge", ["docs/adrs/[0-9]*.md"]), {"docs/adrs/0001-x.md"})
+
+    def test_glob_matching_nothing(self) -> None:
+        """A glob that matches nothing contributes no paths and does not fail."""
+        self.assertEqual(self.paths("replace", ["scripts/nope-*.sh"]), set())
+
+    def test_glob_never_reaches_into_dot_git(self) -> None:
+        """``.git`` is never expanded into."""
+        self.assertEqual(self.paths("replace", ["*config"]), set())
+
+    def test_glob_overlapping_another_tier_is_excluded(self) -> None:
+        """A path also matched by another tier is not returned (existing rule)."""
+        tiers = {"replace": ["scripts/*.sh"], "ignore": ["scripts/other.sh"], "merge": []}
+        self.assertEqual(
+            template_sync.tier_paths(self.root, tiers, "replace"),
+            {"scripts/release-a.sh", "scripts/release-b.sh"},
+        )
+
+    def test_apply_syncs_glob_entries_end_to_end(self) -> None:
+        """``apply`` copies a replace-tier glob match into the instance."""
+        old, instance = self.root / "old", self.root / "instance"
+        old.mkdir()
+        instance.mkdir()
+        manifest = self.root / "manifest.yml"
+        manifest.write_text("replace:\n  - scripts/release-*.sh\n")
+        parser = template_sync.build_parser()
+        args = parser.parse_args(
+            [
+                "apply",
+                "--manifest",
+                str(manifest),
+                "--old-ref",
+                str(old),
+                "--new-ref",
+                str(self.root),
+                "--instance-root",
+                str(instance),
+            ]
+        )
+        self.assertEqual(args.func(args), 0)
+        self.assertTrue((instance / "scripts/release-a.sh").is_file())
+        self.assertFalse((instance / "scripts/other.sh").exists())
+
+
+class ApplyMergeTest(unittest.TestCase):
+    """``template_sync.apply_merge`` reports only real changes and leaves links alone."""
+
+    def setUp(self) -> None:
+        """Create old/new template checkouts and an instance in a temp dir."""
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.old, self.new, self.instance = (self.root / n for n in ("old", "new", "instance"))
+        write(self.old / "m.txt", b"a\nb\nc\n", 0o644)
+        write(self.new / "m.txt", b"a\nB\nc\n", 0o644)
+        write(self.instance / "m.txt", b"a\nb\nc\nd\n", 0o644)
+
+    def apply(self) -> dict[str, list[str]]:
+        """Run the merge step for ``m.txt``."""
+        return template_sync.apply_merge(self.old, self.new, self.instance, {"m.txt"})
+
+    def test_second_run_changes_and_reports_nothing(self) -> None:
+        """Re-running the same old->new sync leaves the tree alone and lists no files."""
+        # Regression: a re-run reported every merge-tier file as "merged" again.
+        self.assertEqual(self.apply(), {"merged": ["m.txt"], "conflicts": []})
+        merged = (self.instance / "m.txt").read_bytes()
+        self.assertEqual(merged, b"a\nB\nc\nd\n")
+        self.assertEqual(self.apply(), {"merged": [], "conflicts": []})
+        self.assertEqual((self.instance / "m.txt").read_bytes(), merged)
+
+    def test_instance_already_equal_to_new_is_not_reported(self) -> None:
+        """A file the instance already has at the new version is not "merged"."""
+        write(self.instance / "m.txt", b"a\nB\nc\n", 0o644)
+        self.assertEqual(self.apply(), {"merged": [], "conflicts": []})
+
+    def test_symlinked_instance_file_is_not_merged_through(self) -> None:
+        """Like the replace tier, a deliberately linked instance file is left alone."""
+        target = self.root / "real.txt"
+        target.write_bytes(b"a\nb\nc\nd\n")
+        (self.instance / "m.txt").unlink()
+        (self.instance / "m.txt").symlink_to(target)
+        self.assertEqual(self.apply(), {"merged": [], "conflicts": []})
+        self.assertEqual(target.read_bytes(), b"a\nb\nc\nd\n")
+
+    def test_dangling_symlink_is_not_written_through(self) -> None:
+        """A dangling link is not "missing": copying would create its target."""
+        (self.instance / "m.txt").unlink()
+        dangling = self.root / "nowhere.txt"
+        (self.instance / "m.txt").symlink_to(dangling)
+        self.assertEqual(self.apply(), {"merged": [], "conflicts": []})
+        self.assertFalse(dangling.exists())
+
+
+class MergeFileErrorTest(unittest.TestCase):
+    """``git merge-file`` exit 255 is an error, not a conflict."""
+
+    def setUp(self) -> None:
+        """Create a temp dir for the three merge inputs."""
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+
+    def merge(self) -> bool:
+        """Run ``merge_file`` on the ours/base/theirs files."""
+        root = self.root
+        return template_sync.merge_file(root / "ours", root / "base", root / "theirs")
+
+    def test_conflict_is_reported_as_true(self) -> None:
+        """Overlapping edits are a conflict: True, markers written."""
+        write(self.root / "base", b"a\nb\nc\n", 0o644)
+        write(self.root / "theirs", b"a\nX\nc\n", 0o644)
+        write(self.root / "ours", b"a\nY\nc\n", 0o644)
+        self.assertTrue(self.merge())
+
+    def test_clean_merge_is_reported_as_false(self) -> None:
+        """A merge without overlapping edits is not a conflict."""
+        write(self.root / "base", b"a\nb\nc\n", 0o644)
+        write(self.root / "theirs", b"a\nB\nc\n", 0o644)
+        write(self.root / "ours", b"a\nb\nc\nd\n", 0o644)
+        self.assertFalse(self.merge())
+
+    def test_missing_input_raises_instead_of_reporting_a_conflict(self) -> None:
+        """A missing file makes git exit 255; that must raise."""
+        write(self.root / "base", b"a\n", 0o644)
+        write(self.root / "ours", b"a\n", 0o644)
+        with self.assertRaises(RuntimeError):
+            template_sync.merge_file(self.root / "ours", self.root / "base", self.root / "none")
+
+    def test_binary_file_error_propagates_from_apply_merge(self) -> None:
+        """A binary merge-tier file fails the sync rather than landing in ``conflicts``."""
+        old, new, instance = (self.root / n for n in ("old", "new", "instance"))
+        write(old / "b.bin", b"a\x00b\n", 0o644)
+        write(new / "b.bin", b"a\x00c\n", 0o644)
+        write(instance / "b.bin", b"a\x00d\n", 0o644)
+        with self.assertRaises(RuntimeError):
+            template_sync.apply_merge(old, new, instance, {"b.bin"})
+
+    def test_cmd_apply_returns_error_code_on_merge_error(self) -> None:
+        """``apply`` exits 2 (not the conflict code 1) when a merge errors."""
+        manifest = self.root / "manifest.yml"
+        manifest.write_text("")
+        args = argparse.Namespace(
+            manifest=manifest, old_ref=self.root, new_ref=self.root, instance_root=self.root
+        )
+        with (
+            mock.patch.object(template_sync, "parse_manifest", return_value={}),
+            mock.patch.object(template_sync, "tier_paths", return_value=set()),
+            mock.patch.object(template_sync, "apply_replace", return_value={}),
+            mock.patch.object(template_sync, "apply_merge", side_effect=RuntimeError("boom")),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(template_sync.cmd_apply(args), 2)
+
+    def _apply_args(self, manifest: Path) -> argparse.Namespace:
+        """Build ``apply`` arguments over empty checkouts and the given manifest."""
+        return argparse.Namespace(
+            manifest=manifest, old_ref=self.root, new_ref=self.root, instance_root=self.root
+        )
+
+    def _exit_code(self, args: argparse.Namespace) -> int:
+        """Run ``cmd_apply`` with stderr captured."""
+        with contextlib.redirect_stderr(io.StringIO()):
+            return template_sync.cmd_apply(args)
+
+    def test_cmd_apply_returns_error_code_on_missing_manifest(self) -> None:
+        """An unreadable manifest is an error (2), not an uncaught traceback (1)."""
+        self.assertEqual(self._exit_code(self._apply_args(self.root / "absent.yml")), 2)
+
+    def test_cmd_apply_returns_error_code_on_undecodable_manifest(self) -> None:
+        """A manifest that is not UTF-8 (UnicodeDecodeError) exits 2."""
+        manifest = self.root / "manifest.yml"
+        manifest.write_bytes(b"\xff\xfe")
+        self.assertEqual(self._exit_code(self._apply_args(manifest)), 2)
+
+    def test_cmd_apply_returns_error_code_on_tier_paths_failure(self) -> None:
+        """A failure while expanding tiers to paths exits 2."""
+        manifest = self.root / "manifest.yml"
+        manifest.write_text("")
+        with mock.patch.object(template_sync, "tier_paths", side_effect=OSError("denied")):
+            self.assertEqual(self._exit_code(self._apply_args(manifest)), 2)
+
+    def test_cmd_apply_returns_error_code_on_unexpected_exception(self) -> None:
+        """Even a bug (here a KeyError) exits 2, not the traceback's 1 (= conflicts)."""
+        manifest = self.root / "manifest.yml"
+        manifest.write_text("")
+        with mock.patch.object(template_sync, "tier_paths", side_effect=KeyError("bug")):
+            self.assertEqual(self._exit_code(self._apply_args(manifest)), 2)
+
+    def test_cmd_apply_does_not_catch_base_exceptions(self) -> None:
+        """Ctrl-C and ``SystemExit`` still propagate."""
+        manifest = self.root / "manifest.yml"
+        manifest.write_text("")
+        with (
+            mock.patch.object(template_sync, "tier_paths", side_effect=KeyboardInterrupt),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            self._exit_code(self._apply_args(manifest))
+
 
 _SCRIPT_PATH_RE = re.compile(r"(?<![\w.-])(\.github/scripts/[\w.-]+\.sh)\b")
 # What may sit between an interpreter and the script path: a `./` or a
 # `${{ ... }}/` prefix, quotes. Stripped from the text before the path.
 _PATH_PREFIX_RE = re.compile(r"""["']?(?:\$\{\{[^}]*\}\}/|\$\{?GITHUB_WORKSPACE\}?/|\./)?["']?$""")
 # An interpreter (optionally by path, with flags) ending the text before a path.
-_INTERPRETER_RE = re.compile(r"(?:^|[\s;&|(])(?:\S*/)?(?:bash|sh|source|\.)(?:\s+-(?!\w*c)\S+)*\s+$")
+_INTERPRETER_RE = re.compile(
+    r"(?:^|[\s;&|(])(?:\S*/)?(?:bash|sh|source|\.)(?:\s+-(?!\w*c)\S+)*\s+$"
+)
 
 
 def directly_invoked_scripts(workflow_text: str) -> set[str]:
@@ -155,7 +423,7 @@ class DirectlyInvokedScriptsAreExecutableTest(unittest.TestCase):
             'run: bash "${GITHUB_WORKSPACE}/.github/scripts/a.sh"',
             "run: source .github/scripts/a.sh",
             "run: . .github/scripts/a.sh",
-            "run: bash \"${{ github.workspace }}/.github/scripts/a.sh\"",
+            'run: bash "${{ github.workspace }}/.github/scripts/a.sh"',
             "# run: .github/scripts/a.sh",
             "run: python .github/scripts/a.py",
         ]
@@ -163,8 +431,8 @@ class DirectlyInvokedScriptsAreExecutableTest(unittest.TestCase):
             self.assertEqual(directly_invoked_scripts(text), set(), text)
 
     def test_claude_hook_is_executable(self) -> None:
-        # .claude/settings.json runs it directly as a hook command.
         """The Claude hook script is executable."""
+        # .claude/settings.json runs it directly as a hook command.
         self.assertTrue(is_exec(REPO_ROOT / ".claude" / "hooks" / "self-check.sh"))
 
 
@@ -176,7 +444,9 @@ DEFAULT_PUBLISH_PACKAGES_MARKER = "doesn't implement publish-packages"
 
 def keeps_default_publish_packages(makefile_text: str) -> bool:
     """Whether a Makefile still has base's default error message (comments don't count)."""
-    code = "\n".join(line for line in makefile_text.splitlines() if not line.lstrip().startswith("#"))
+    code = "\n".join(
+        line for line in makefile_text.splitlines() if not line.lstrip().startswith("#")
+    )
     return DEFAULT_PUBLISH_PACKAGES_MARKER in code
 
 
@@ -187,19 +457,33 @@ class KeepsDefaultPublishPackagesTest(unittest.TestCase):
         """The marker matches the default message and nothing else."""
         self.assertTrue(
             keeps_default_publish_packages(
-                'publish-packages:\n\t@echo "error: Makefile doesn\'t implement publish-packages" >&2\n'
+                "publish-packages:\n"
+                '\t@echo "error: Makefile doesn\'t implement publish-packages" >&2\n'
             )
         )
         self.assertFalse(keeps_default_publish_packages("publish-packages:\n\tnpm publish\n"))
         # A comment mentioning the phrase is not the default.
         self.assertFalse(
-            keeps_default_publish_packages("# we don't implement publish-packages yet\npublish-packages:\n\tnpm publish\n")
+            keeps_default_publish_packages(
+                "# we don't implement publish-packages yet\npublish-packages:\n\tnpm publish\n"
+            )
         )
+
+
+class MakefileDefinesPublishPackagesTest(unittest.TestCase):
+    """Every instance defines `publish-packages` (base's default or its own)."""
+
+    def test_target_is_defined(self) -> None:
+        """A Makefile without the target fails the release with "No rule to make target"."""
+        makefile = REPO_ROOT / "Makefile"
+        self.assertTrue(makefile.is_file(), "no Makefile at the repository root")
+        self.assertRegex(makefile.read_text(), r"(?m)^publish-packages:")
 
 
 @unittest.skipUnless(shutil.which("make"), "make not installed")
 @unittest.skipUnless(
-    (REPO_ROOT / "Makefile").is_file() and keeps_default_publish_packages((REPO_ROOT / "Makefile").read_text()),
+    (REPO_ROOT / "Makefile").is_file()
+    and keeps_default_publish_packages((REPO_ROOT / "Makefile").read_text()),
     "this Makefile implements publish-packages itself",
 )
 class DefaultPublishPackagesTest(unittest.TestCase):
@@ -226,7 +510,9 @@ class DefaultPublishPackagesTest(unittest.TestCase):
         for var in ("PYPI_PUBLISH", "NPM_PUBLISH", "CARGO_PUBLISH"):
             result = self.run_target(**{var: "1"})
             self.assertNotEqual(result.returncode, 0, var)
-            self.assertIn(f"sets {var} but its Makefile doesn't implement publish-packages", result.stderr)
+            self.assertIn(
+                f"sets {var} but its Makefile doesn't implement publish-packages", result.stderr
+            )
 
 
 if __name__ == "__main__":
