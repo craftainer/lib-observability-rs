@@ -1,6 +1,7 @@
 //! Observability building blocks for Axum services: health checks and the
-//! `/live` and `/ready` router that serves them, and structured JSON logging
-//! with optional OTLP export.
+//! `/live` and `/ready` router that serves them, structured JSON logging
+//! with optional OTLP export, and [`request_id::RequestIdLayer`], a tower
+//! layer that validates, creates and echoes a request ID.
 //!
 //! The crate knows nothing about an application's configuration, error type
 //! or state: a host passes plain values (a pool, a client, a URL) to the
@@ -47,5 +48,6 @@
 pub mod error;
 pub mod health;
 pub mod logs;
+pub mod request_id;
 
 pub use error::Error;

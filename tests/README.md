@@ -17,6 +17,12 @@ a dependent would, and runs against the devcontainer's backing services
   builds each file here as its own process, so this is the only place it is
   called.
 
+- `request_id.rs` — `RequestIdLayer` behind an Axum router, in process (no
+  backing service).
+- `request_id_logs.rs` — the `request_id` span field in the JSON log lines;
+  its own file because a tracing callsite first hit with no subscriber stays
+  disabled for the whole process.
+
 Unit tests live next to the code they test.
 
 ## Do
