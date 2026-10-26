@@ -147,14 +147,19 @@ repos:
 
       - id: cargo-semver-checks
         name: cargo semver-checks (only once a baseline is published)
-        # The baseline is the latest release on crates.io. A crate's first
-        # release (and this template) has none, so a 404 from the sparse
-        # index skips with a message; any other failure is an error. The
-        # name and index URL come from scripts/crate_info.py (a virtual
-        # workspace sets CRATE). --release-type is explicit because the
-        # in-git version is a permanent 0.0.0 (the tag is the real version),
-        # which cargo-semver-checks would otherwise treat as "no bump" and
-        # demand a major-level check for. Default `minor`; a maintainer
+        # The baseline is the latest non-yanked release on crates.io, passed
+        # explicitly as --baseline-version: left to itself,
+        # cargo-semver-checks looks for a baseline at or below the in-git
+        # version, and the permanent 0.0.0 has none ("No available baseline
+        # versions"). A crate's first release (and this template) has no
+        # baseline, so a 404 from the sparse index, or a crate whose every
+        # version is yanked, skips with a message; any other failure is an
+        # error. The name, index URL and latest version come from
+        # scripts/crate_info.py (a virtual workspace sets CRATE; one baseline
+        # version applies to every member checked). --release-type is
+        # explicit because the in-git version is a permanent 0.0.0 (the tag
+        # is the real version), which cargo-semver-checks would otherwise
+        # treat as "no bump" and demand a major-level check for. Default `minor`; a maintainer
         # planning a breaking release sets SEMVER_RELEASE_TYPE=major, a
         # patch-only one `patch`.
         entry: >-
@@ -162,7 +167,8 @@ repos:
           read -r name url <<<"$info";
           code=$(curl -sS -o /dev/null -w "%{http_code}" "$url") || { echo "semver-checks: could not reach $url (curl exit $?)" >&2; exit 1; };
           case $code in
-          200) exec cargo semver-checks --workspace --release-type "${SEMVER_RELEASE_TYPE:-minor}";;
+          200) if v=$(python3 -I scripts/crate_info.py latest-version); then exec cargo semver-checks --workspace --baseline-version "$v" --release-type "${SEMVER_RELEASE_TYPE:-minor}";
+          else rc=$?; [ $rc -eq 1 ] || exit 1; echo "semver-checks: no non-yanked version of $name on crates.io; skipping"; fi;;
           404) echo "semver-checks: no published baseline for $name on crates.io; skipping";;
           *) echo "semver-checks: crates.io index returned HTTP $code" >&2; exit 1;;
           esac' --
