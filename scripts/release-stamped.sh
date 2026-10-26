@@ -13,6 +13,11 @@ if [[ -n ${RELEASE_VERSION:-} ]]; then
     backup=$(mktemp -d)
     cp Cargo.toml Cargo.lock "$backup/"
     trap 'cp "$backup/Cargo.toml" "$backup/Cargo.lock" . && rm -rf "$backup"' EXIT
+    # The --offline update below resolves from the local registry cache only,
+    # which is empty on a fresh runner: a crate with any dependency would fail
+    # with "no matching package named ..." Fetch the locked set first,
+    # before the stamp, while Cargo.lock still matches Cargo.toml (--locked).
+    cargo fetch --locked
     python3 -I scripts/release-stamp-version.py Cargo.toml "$RELEASE_VERSION"
     # --workspace rewrites only the workspace members' own versions in
     # Cargo.lock; dependency versions stay exactly as locked.

@@ -13,6 +13,16 @@
 # https://index.crates.io), RELEASE_CHECK_ATTEMPTS / RELEASE_CHECK_DELAY
 # (retry tuning for index propagation, defaults 10 and 15 seconds, doubling
 # to 120). A release that never shows up passes with a notice, not a failure.
+#
+# The probe is built from the temp dir, outside the repo, so what a consumer
+# of the published crate would get is what is checked: cargo finds
+# `.cargo/config.toml` by walking up from its working directory, so the repo's
+# [patch] sections, source replacement and rustflags cannot apply. (The
+# runner's own $CARGO_HOME/config.toml still applies; it belongs to the
+# runner, not the repo.) Outside the repo rustup no longer sees
+# rust-toolchain.toml either, so the channel is read from it and handed to
+# rustup explicitly via RUSTUP_TOOLCHAIN (same effect as `cargo +<channel>`,
+# and a no-op for a cargo that is not a rustup proxy).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -33,6 +43,12 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 # One target dir for the probe build.
 export CARGO_TARGET_DIR="$tmp/target"
+toolchain=$(python3 -I -c 'import sys, tomllib
+with open(sys.argv[1], "rb") as f:
+    print(tomllib.load(f)["toolchain"]["channel"])' rust-toolchain.toml) || {
+    echo "could not read [toolchain] channel from rust-toolchain.toml" >&2
+    exit 1
+}
 
 echo "== published $name $RELEASE_VERSION on crates.io"
 attempts=${RELEASE_CHECK_ATTEMPTS:-10}
@@ -44,7 +60,13 @@ for ((i = 1; i <= attempts; i++)); do
     status=0
     python3 -I scripts/crate_info.py has-version "$RELEASE_VERSION" --not-yanked || status=$?
     if [[ $status -eq 0 ]]; then
-        probe "$tmp/published-probe" "$name" "\"=$RELEASE_VERSION\""
+        # Subshell: leaves the repo (config discovery) and pins the toolchain
+        # for this build only.
+        (
+            cd "$tmp"
+            export RUSTUP_TOOLCHAIN=$toolchain
+            probe "$tmp/published-probe" "$name" "\"=$RELEASE_VERSION\""
+        )
         echo "OK: $name =$RELEASE_VERSION builds from crates.io"
         exit 0
     fi
