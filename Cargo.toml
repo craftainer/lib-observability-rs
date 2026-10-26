@@ -47,7 +47,7 @@ async-trait = "=0.1.92"
 axum = { version = "=0.8.9", default-features = false, features = ["json", "tokio"] }
 futures = { version = "=0.3.34", default-features = false, features = ["std", "async-await"] }
 serde = { version = "=1.0.229", features = ["derive"] }
-thiserror = "=2.0.20"
+thiserror = "=2.0.21"
 # The request-ID layer: tower's two traits (not the full `tower` crate),
 # `pin-project-lite` for its response future and `uuid` for a fresh ID.
 pin-project-lite = "=0.2.17"
@@ -55,7 +55,7 @@ tower-layer = "=0.3.3"
 tower-service = "=0.3.3"
 uuid = { version = "=1.28.0", default-features = false, features = ["v4"] }
 # `time` for the per-check timeout; `sync` for the Redis check's lazy connection.
-tokio = { version = "=1.53.3", default-features = false, features = ["sync", "time"] }
+tokio = { version = "=1.54.1", default-features = false, features = ["sync", "time"] }
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["env-filter", "fmt", "json", "registry", "std"] }
 
@@ -78,7 +78,7 @@ opentelemetry_sdk = { version = "=0.32.1", optional = true, default-features = f
 [dev-dependencies]
 aws-config = "=1.8.11"
 serde_json = "=1.0.151"
-tokio = { version = "=1.53.3", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "=1.54.1", features = ["macros", "rt-multi-thread", "time"] }
 tower = { version = "=0.5.3", features = ["util"] }
 
 [features]
