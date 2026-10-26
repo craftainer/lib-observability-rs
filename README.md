@@ -27,6 +27,9 @@ for why the crate exists and where its boundary is.
   redacted.
 - `health::router::router`: the `/live` and `/ready` routes, over any state
   that implements `HasHealthRegistry`.
+- `health::info::info_router`: an opt-in `GET /info` returning
+  `{"version","commit"}` from `APP_VERSION`/`APP_COMMIT` (null when unset or
+  empty), merged next to `router()`; off unless the host merges it (ADR 0006).
 - `configure_telemetry` (`logs::configure_telemetry`): installs the `tracing`
   subscriber, JSON lines on stdout in `lib-observability-py`'s flat layout
   (`timestamp`, `level`, `logger`, `message`, extra fields at the top level
@@ -59,6 +62,7 @@ registry.register(Box::new(RedisHealthCheck::new("redis://redis:6379/0")))?;
 let telemetry = configure_telemetry()?; // keep it alive until exit
 // ... implement HasHealthRegistry on the app state, then:
 let app = Router::new().nest("/health", router()).with_state(state);
+// opt in to /health/info: router().merge(info_router())
 ```
 
 ## Features

@@ -7,7 +7,7 @@ authentication; a host passes plain values (a pool, a client, a URL) and
 implements one accessor trait.
 
 - `health/` — `HealthCheck`, `HealthRegistry`, the ready-made checks and the
-  `/live` and `/ready` router (`health/README.md`).
+  `/live` and `/ready` router and the opt-in `info_router` (`health/README.md`).
 - `logs.rs` — `configure_telemetry`, the one call that installs the
   `tracing` subscriber: JSON lines on stdout (`logs/json.rs`, the flat
   `lib-observability-py` layout with `trace_id`/`span_id`/`request_id` and
@@ -25,8 +25,7 @@ implements one accessor trait.
   extensions and puts it in a `request` span as `request_id`. No feature: it
   needs no backing-service client (ADR 0004).
 
-`/health/info` is planned as its own module (see
-`docs/adrs/0002-extract-the-observability-layer.md`).
+`health/info.rs` holds the opt-in `/health/info` router (ADR 0006).
 
 ## Do
 
