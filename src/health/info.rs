@@ -22,6 +22,10 @@ const VERSION_VAR: &str = "APP_VERSION";
 const COMMIT_VAR: &str = "APP_COMMIT";
 
 /// The `/info` response body: `{"version": ..., "commit": ...}`.
+///
+/// Non-exhaustive so fields can be added in minor releases; hosts never
+/// construct it, the router does.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BuildInfo {
     /// `APP_VERSION`, or `None` when unset or empty.
