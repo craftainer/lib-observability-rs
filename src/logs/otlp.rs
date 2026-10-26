@@ -3,6 +3,7 @@
 use crate::Error;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::{ExporterBuildError, LogExporter};
+use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::{BatchLogProcessor, SdkLogger, SdkLoggerProvider};
 use tracing::Metadata;
 use tracing_subscriber::Layer;
@@ -49,26 +50,6 @@ fn exportable_target(target: &str) -> bool {
     !EXPORTER_CRATES.contains(&krate)
 }
 
-/// Whether the environment asks for OTLP log export: a non-empty endpoint
-/// (general or logs-specific), and neither `OTEL_SDK_DISABLED=true` nor
-/// `OTEL_LOGS_EXPORTER` containing `none`, as in `lib-observability-py`.
-fn export_requested(env: &dyn Fn(&str) -> Option<String>) -> bool {
-    // The logs-specific endpoint, even when empty, wins over the general one,
-    // as in the OpenTelemetry spec (an empty value is how to opt logs out).
-    let endpoint =
-        env("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT").or_else(|| env("OTEL_EXPORTER_OTLP_ENDPOINT"));
-    if endpoint.is_none_or(|value| value.is_empty()) {
-        return false;
-    }
-    if env("OTEL_SDK_DISABLED").is_some_and(|v| v.trim().eq_ignore_ascii_case("true")) {
-        return false;
-    }
-    !env("OTEL_LOGS_EXPORTER").is_some_and(|v| {
-        v.split(',')
-            .any(|name| name.trim().eq_ignore_ascii_case("none"))
-    })
-}
-
 /// The layer type [`log_layer`] builds: the OTLP bridge, filtered so it
 /// ignores the exporter's own events.
 pub(super) type LogLayer<S> = Filtered<
@@ -77,8 +58,7 @@ pub(super) type LogLayer<S> = Filtered<
     S,
 >;
 
-/// The layer and its provider, or `None` unless the environment asks for
-/// OTLP log export. This never defaults to exporting to `localhost:4318` the
+/// The layer and its provider, or `None` unless `requested`. This never defaults to exporting to `localhost:4318` the
 /// way the OTLP exporter's own fallback would, since that default exists for
 /// a collector that, for most deployments, is not there.
 ///
@@ -86,12 +66,15 @@ pub(super) type LogLayer<S> = Filtered<
 ///
 /// [`Error::ExporterBuild`] when export is requested and the exporter cannot
 /// be built.
-pub(super) fn log_layer<S>() -> Result<Option<(LogLayer<S>, SdkLoggerProvider)>, Error>
+pub(super) fn log_layer<S>(
+    resource: &Resource,
+    requested: bool,
+) -> Result<Option<(LogLayer<S>, SdkLoggerProvider)>, Error>
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
-    let requested = export_requested(&|name| std::env::var(name).ok());
-    layer_from(requested, default_exporter)
+    // Whether the environment asks for it is decided by the caller.
+    layer_from(requested, default_exporter, resource)
 }
 
 /// The OTLP/HTTP log exporter, configured from the standard `OTEL_*`
@@ -106,10 +89,11 @@ fn default_exporter() -> Result<LogExporter, ExporterBuildError> {
 /// function has one instantiation and coverage counts it once.
 ///
 /// The provider is returned (not dropped) so the host can flush and shut it
-/// down through [`super::LoggingGuard`].
+/// down through [`super::Telemetry`].
 fn layer_from<S>(
     requested: bool,
     exporter: fn() -> Result<LogExporter, ExporterBuildError>,
+    resource: &Resource,
 ) -> Result<Option<(LogLayer<S>, SdkLoggerProvider)>, Error>
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
@@ -117,8 +101,9 @@ where
     if !requested {
         return Ok(None);
     }
-    let exporter = exporter().map_err(|err| Error::ExporterBuild(err.to_string()))?;
+    let exporter = exporter().map_err(|err| Error::ExporterBuild(format!("logs: {err}")))?;
     let provider = SdkLoggerProvider::builder()
+        .with_resource(resource.clone())
         .with_log_processor(BatchLogProcessor::builder(exporter).build())
         .build();
     let filter: FilterFn<fn(&Metadata<'_>) -> bool> = FilterFn::new(exportable);
@@ -129,14 +114,18 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::logs::LoggingGuard;
+    use crate::logs::Telemetry;
+    use crate::otel::{Providers, shared_resource};
     use opentelemetry_otlp::WithExportConfig;
-    use std::collections::HashMap;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, mpsc};
     use tracing_subscriber::layer::SubscriberExt;
+
+    fn resource() -> Resource {
+        shared_resource(&|_| None)
+    }
 
     fn local_exporter() -> Result<LogExporter, ExporterBuildError> {
         LogExporter::builder()
@@ -154,72 +143,19 @@ mod tests {
         })
     }
 
-    fn env_of(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
-        let map: HashMap<String, String> = pairs
-            .iter()
-            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-            .collect();
-        move |name| map.get(name).cloned()
-    }
-
-    #[test]
-    fn export_needs_a_non_empty_endpoint() {
-        assert!(!export_requested(&env_of(&[])));
-        assert!(!export_requested(&env_of(&[(
-            "OTEL_EXPORTER_OTLP_ENDPOINT",
-            ""
-        )])));
-        assert!(export_requested(&env_of(&[(
-            "OTEL_EXPORTER_OTLP_ENDPOINT",
-            "http://c:4318"
-        )])));
-        assert!(export_requested(&env_of(&[(
-            "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
-            "http://c:4318/v1/logs"
-        )])));
-        // An empty logs endpoint opts logs out whatever the general one says.
-        assert!(!export_requested(&env_of(&[
-            ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://c:4318"),
-            ("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", ""),
-        ])));
-    }
-
-    #[test]
-    fn export_can_be_switched_off() {
-        let on = ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://c:4318");
-        assert!(!export_requested(&env_of(&[
-            on,
-            ("OTEL_SDK_DISABLED", " TRUE ")
-        ])));
-        assert!(export_requested(&env_of(&[
-            on,
-            ("OTEL_SDK_DISABLED", "false")
-        ])));
-        assert!(!export_requested(&env_of(&[
-            on,
-            ("OTEL_LOGS_EXPORTER", "console, None")
-        ])));
-        assert!(export_requested(&env_of(&[
-            on,
-            ("OTEL_LOGS_EXPORTER", "otlp")
-        ])));
-    }
-
     #[test]
     fn no_layer_without_a_request() {
-        let layer = layer_from::<tracing_subscriber::Registry>(false, default_exporter);
+        let layer =
+            layer_from::<tracing_subscriber::Registry>(false, default_exporter, &resource());
         assert!(matches!(layer, Ok(None)));
     }
 
-    #[test]
-    fn the_environment_decides_in_log_layer() {
-        // Normally no OTLP variable is set in the test environment; if one
-        // is, a layer is expected.
-        let requested = export_requested(&|name| std::env::var(name).ok());
-        // Only built when the ambient environment asks for nothing, so the
-        // test never starts an exporter thread aimed at a real collector.
-        let layer = (!requested).then(|| log_layer::<tracing_subscriber::Registry>().unwrap());
-        assert!(layer.is_none_or(|layer| layer.is_none()));
+    #[tokio::test]
+    async fn log_layer_builds_the_default_exporter() {
+        let layer = log_layer::<tracing_subscriber::Registry>(&resource(), true);
+        assert!(matches!(layer, Ok(Some(_))));
+        let layer = log_layer::<tracing_subscriber::Registry>(&resource(), false);
+        assert!(matches!(layer, Ok(None)));
     }
 
     #[tokio::test]
@@ -229,17 +165,17 @@ mod tests {
 
     #[tokio::test]
     async fn a_layer_is_built_once_export_is_requested() {
-        let layer = layer_from::<tracing_subscriber::Registry>(true, local_exporter);
+        let layer = layer_from::<tracing_subscriber::Registry>(true, local_exporter, &resource());
         assert!(matches!(layer, Ok(Some(_))));
     }
 
     #[test]
     fn an_unbuildable_exporter_is_an_error_not_a_silent_no_op() {
-        let err = layer_from::<tracing_subscriber::Registry>(true, failing_exporter)
+        let err = layer_from::<tracing_subscriber::Registry>(true, failing_exporter, &resource())
             .err()
             .expect("an error");
         assert!(
-            matches!(&err, Error::ExporterBuild(m) if m.contains("rejected for the test")),
+            matches!(&err, Error::ExporterBuild(m) if m.starts_with("logs:") && m.contains("rejected for the test")),
             "{err}"
         );
     }
@@ -364,8 +300,11 @@ mod tests {
             .build();
         let filter: FilterFn<fn(&Metadata<'_>) -> bool> = FilterFn::new(exportable);
         let layer = OpenTelemetryTracingBridge::new(&provider).with_filter(filter);
-        let guard = LoggingGuard {
-            provider: Some(provider),
+        let guard = Telemetry {
+            providers: Providers {
+                logger: Some(provider),
+                ..Providers::default()
+            },
         };
         let subscriber = tracing_subscriber::registry().with(layer);
         tracing::subscriber::with_default(subscriber, || {

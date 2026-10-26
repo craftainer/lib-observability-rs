@@ -27,11 +27,22 @@ for why the crate exists and where its boundary is.
   redacted.
 - `health::router::router`: the `/live` and `/ready` routes, over any state
   that implements `HasHealthRegistry`.
-- `logs::configure_logging`: JSON lines on stdout, and with the `otel`
-  feature OTLP/HTTP export of the same logs. It returns a `LoggingGuard`:
-  keep it until exit and call `shutdown()` (or let it drop) so the last batch
-  is flushed. An exporter that cannot be built is an `Error::ExporterBuild`
-  (`configure_logging_without_export` is the JSON-only fallback).
+- `configure_telemetry` (`logs::configure_telemetry`): installs the `tracing`
+  subscriber, JSON lines on stdout in `lib-observability-py`'s flat layout
+  (`timestamp`, `level`, `logger`, `message`, extra fields at the top level
+  with credential-looking keys redacted, `trace_id`/`span_id` inside an
+  OpenTelemetry span, `request_id` inside a request). With the `otel` feature
+  and an OTLP endpoint in the environment it also exports logs, traces and
+  metrics. It returns a `Telemetry`: keep it until exit and call `shutdown()`
+  (or let it drop) so the last batch is flushed. An exporter that cannot be
+  built is an `Error::ExporterBuild` (`configure_telemetry_without_export` is
+  the JSON-only fallback). `configure_logging` is its deprecated old name. See
+  [`docs/adrs/0005-otel-traces-metrics-log-correlation.md`](docs/adrs/0005-otel-traces-metrics-log-correlation.md).
+- `otel::ServerSpanLayer` (feature `otel`): a tower layer that opens a server
+  span per request (named by axum's `MatchedPath`, `/health/` excluded,
+  `traceparent` honoured) and records `http.server.request.duration`;
+  `otel::instrument_db(&PgPool)` (features `otel` and `postgres`) adds
+  connection-pool gauges.
 - `request_id::RequestIdLayer`: a tower layer (no feature needed) that reads
   `X-Request-ID` (name configurable), keeps it only if it is 1 to 128
   characters from `[A-Za-z0-9._-]` and otherwise uses a fresh UUID, echoes it
@@ -45,7 +56,7 @@ for why the crate exists and where its boundary is.
 let mut registry = HealthRegistry::new();
 registry.register(Box::new(DatabaseHealthCheck::new(pool.clone())))?;
 registry.register(Box::new(RedisHealthCheck::new("redis://redis:6379/0")))?;
-let _logging = configure_logging()?; // keep it alive until exit
+let telemetry = configure_telemetry()?; // keep it alive until exit
 // ... implement HasHealthRegistry on the app state, then:
 let app = Router::new().nest("/health", router()).with_state(state);
 ```
@@ -58,10 +69,15 @@ All off by default, so a service compiles only the clients it has.
 - `redis`: `RedisHealthCheck`.
 - `s3`: `S3HealthCheck` over an `aws_sdk_s3::Client`.
 - `http`: `HttpHealthCheck`.
-- `otel`: OTLP/HTTP log export from `configure_logging`, enabled at run time
-  by a non-empty `OTEL_EXPORTER_OTLP_ENDPOINT` or
-  `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, and switched off by
-  `OTEL_SDK_DISABLED=true` or `OTEL_LOGS_EXPORTER=none`.
+- `otel`: OTLP/HTTP export of logs, traces and metrics from
+  `configure_telemetry`, enabled at run time by a non-empty
+  `OTEL_EXPORTER_OTLP_ENDPOINT` (or a signal's own
+  `OTEL_EXPORTER_OTLP_{LOGS,TRACES,METRICS}_ENDPOINT`) and switched off by
+  `OTEL_SDK_DISABLED=true` or `OTEL_{LOGS,TRACES,METRICS}_EXPORTER=none`. The
+  SDK reads `OTEL_TRACES_SAMPLER(_ARG)`, `OTEL_METRIC_EXPORT_INTERVAL`,
+  `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES`; `APP_VERSION` becomes
+  `service.version`. Adds the `otel` module (`ServerSpanLayer`, and with
+  `postgres` `instrument_db`).
 - `testing`: `MockHealthCheck`. Enable it from a dev-dependency or a
   test/mock mode, not in production builds.
 

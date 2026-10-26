@@ -8,17 +8,25 @@ implements one accessor trait.
 
 - `health/` — `HealthCheck`, `HealthRegistry`, the ready-made checks and the
   `/live` and `/ready` router (`health/README.md`).
-- `logs.rs` — `configure_logging`, JSON lines on stdout; with the `otel`
-  feature (`logs/otlp.rs`) also OTLP/HTTP log export when the standard
-  `OTEL_EXPORTER_OTLP_*` endpoint variables are set.
+- `logs.rs` — `configure_telemetry`, the one call that installs the
+  `tracing` subscriber: JSON lines on stdout (`logs/json.rs`, the flat
+  `lib-observability-py` layout with `trace_id`/`span_id`/`request_id` and
+  credential redaction) and, with the `otel` feature, OTLP/HTTP export of
+  logs (`logs/otlp.rs`), traces and metrics when the standard
+  `OTEL_EXPORTER_OTLP_*` endpoint variables are set. Returns a `Telemetry`
+  that flushes every exporter. `configure_logging` is the deprecated old name.
+- `otel/` — feature `otel`: `resource.rs` (which signals the environment asks
+  for, the shared `Resource`), `providers.rs` (tracer and meter providers, the
+  trace layer, `Providers` for flush and shutdown), `server.rs`
+  (`ServerSpanLayer`), `db.rs` (`instrument_db`, with `postgres`). ADR 0005.
 - `error.rs` — `Error`, the crate's own error type.
 - `request_id.rs` — `RequestIdLayer`, a tower layer that validates or creates
   the `X-Request-ID` header, echoes it, stores a `RequestId` in the request's
   extensions and puts it in a `request` span as `request_id`. No feature: it
   needs no backing-service client (ADR 0004).
 
-OpenTelemetry traces and metrics, and `/health/info` are planned
-as their own modules (see `docs/adrs/0002-extract-the-observability-layer.md`).
+`/health/info` is planned as its own module (see
+`docs/adrs/0002-extract-the-observability-layer.md`).
 
 ## Do
 
@@ -33,5 +41,6 @@ as their own modules (see `docs/adrs/0002-extract-the-observability-layer.md`).
 - Depend on an ORM, an auth library or an application's state type.
 - Mutate process-wide state (environment variables, the global subscriber)
   from a unit test: the crate forbids `unsafe`, and a global subscriber can
-  be installed once per process. Pass the value in as a parameter, or test
+  be installed once per process. Test the OpenTelemetry side with the SDK's
+  in-memory exporters and a scoped subscriber (`tracing::subscriber::set_default`). Pass the value in as a parameter, or test
   from a file under `tests/`, which is its own process.
