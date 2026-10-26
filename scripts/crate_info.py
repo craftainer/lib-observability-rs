@@ -13,6 +13,11 @@ Usage (run with `python3 -I`):
                                      exit 0 if the index lists VERSION, 1 if not
                                      (crate unknown included), 2 if the index failed
                                      or answered garbage
+  crate_info.py latest-version       the highest non-yanked version the index lists
+                                     (a stable release over any pre-release); exit 0
+                                     and print it, 1 if there is none (crate unknown
+                                     or all yanked), 2 if the index failed or
+                                     answered garbage
   crate_info.py checksum VERSION     the index's sha256 (`cksum`) of VERSION's .crate;
                                      exit codes as has-version
   crate_info.py target-dir           cargo's target directory (needs cargo)
@@ -118,6 +123,41 @@ def has_version(url: str, version: str, not_yanked: bool) -> int:
     return 0 if found else 1
 
 
+def version_key(version: str) -> tuple:
+    """Sort key following semver precedence; raises ValueError for a non-semver string."""
+    core = version.partition("+")[0]
+    core, _, pre = core.partition("-")
+    major, minor, patch = (int(part) for part in core.split("."))
+    if not pre:
+        # A release outranks every pre-release of the same x.y.z.
+        return (major, minor, patch, 1, ())
+    # Numeric identifiers rank below alphanumeric ones; numbers compare as numbers.
+    identifiers = tuple((0, int(i), "") if i.isdigit() else (1, 0, i) for i in pre.split("."))
+    return (major, minor, patch, 0, identifiers)
+
+
+def latest_version(url: str) -> tuple[int, str]:
+    """(exit status, version): 0 found, 1 no usable version, 2 index failure.
+
+    Prefers the highest stable release; falls back to the highest pre-release
+    when that is all that is not yanked (cargo-semver-checks' own default skips
+    pre-releases the same way).
+    """
+    try:
+        entries = fetch_entries(url)
+        usable = [e["vers"] for e in entries if not e["yanked"]]
+        keyed = sorted((version_key(v), v) for v in usable)
+    except IndexError_ as error:
+        print(f"index lookup failed: {error}", file=sys.stderr)
+        return 2, ""
+    except ValueError:
+        print(f"index lookup failed: a version in {url} is not semver", file=sys.stderr)
+        return 2, ""
+    stable = [v for key, v in keyed if key[3] == 1]
+    candidates = stable or [v for _, v in keyed]
+    return (0, candidates[-1]) if candidates else (1, "")
+
+
 def checksum(url: str, version: str) -> tuple[int, str]:
     """(exit status, cksum): 0 listed, 1 not listed, 2 index failure."""
     try:
@@ -163,6 +203,12 @@ def main(argv: list[str]) -> int:
     elif command == "has-version" and len(argv) >= 2 and set(argv[2:]) <= {"--not-yanked"}:
         name = crate_name(load_manifest(), env)
         return has_version(index_url(name, env), argv[1], "--not-yanked" in argv[2:])
+    elif command == "latest-version" and len(argv) == 1:
+        name = crate_name(load_manifest(), env)
+        status, version = latest_version(index_url(name, env))
+        if status == 0:
+            print(version)
+        return status
     elif command == "checksum" and len(argv) == 2:
         name = crate_name(load_manifest(), env)
         status, cksum = checksum(index_url(name, env), argv[1])

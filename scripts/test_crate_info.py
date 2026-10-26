@@ -115,6 +115,59 @@ class HasVersion(IndexFixture):
             self.assertEqual(crate_info.has_version("https://x", "1.0.0", False), 2)
 
 
+def entry(vers: str, yanked: bool = False) -> dict:
+    return {"vers": vers, "yanked": yanked, "cksum": "cc"}
+
+
+class LatestVersion(IndexFixture):
+    def test_highest_by_semver_not_by_text_or_order(self) -> None:
+        body = lines(entry("0.2.0"), entry("0.10.0"), entry("0.9.0"), entry("0.1.0"))
+        self.assertEqual(crate_info.latest_version(self.url(body)), (0, "0.10.0"))
+
+    def test_yanked_versions_are_skipped(self) -> None:
+        body = lines(entry("0.1.0"), entry("0.2.0"), entry("0.3.0", yanked=True))
+        self.assertEqual(crate_info.latest_version(self.url(body)), (0, "0.2.0"))
+
+    def test_stable_beats_prerelease_but_prerelease_is_the_fallback(self) -> None:
+        body = lines(entry("1.0.0"), entry("2.0.0-rc.1"))
+        self.assertEqual(crate_info.latest_version(self.url(body)), (0, "1.0.0"))
+        only_pre = lines(entry("1.0.0-alpha.2"), entry("1.0.0-alpha.10"), entry("1.0.0-alpha.beta"), entry("1.0.0", yanked=True))
+        self.assertEqual(crate_info.latest_version(self.url(only_pre)), (0, "1.0.0-alpha.beta"))
+
+    def test_build_metadata_is_ignored_for_ordering(self) -> None:
+        body = lines(entry("1.2.3+build.5"), entry("1.2.2"))
+        self.assertEqual(crate_info.latest_version(self.url(body)), (0, "1.2.3+build.5"))
+
+    def test_all_yanked_or_unknown_crate_has_no_version(self) -> None:
+        body = lines(entry("0.1.0", yanked=True), entry("0.2.0", yanked=True))
+        self.assertEqual(crate_info.latest_version(self.url(body)), (1, ""))
+        self.assertEqual(crate_info.latest_version(self.url(None)), (1, ""))
+        self.assertEqual(crate_info.latest_version(self.url("\n\n")), (1, ""))
+
+    def test_malformed_bodies_are_index_failures(self) -> None:
+        bad_bodies = {
+            "html": "<html><body>Service Unavailable</body></html>\n",
+            "truncated": lines(entry("0.1.0")) + '{"vers":"0.2.0","yank',
+            "missing vers": lines({"yanked": False}),
+            "missing yanked": lines({"vers": "1.0.0"}),
+            "not an object": "[1, 2]\n",
+            "not semver": lines(entry("latest")),
+            "two-part version": lines(entry("1.0")),
+        }
+        for label, body in bad_bodies.items():
+            with self.subTest(label), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(crate_info.latest_version(self.url(body)), (2, ""))
+
+    def test_a_yanked_non_semver_entry_is_not_read(self) -> None:
+        body = lines(entry("0.1.0"), entry("latest", yanked=True))
+        self.assertEqual(crate_info.latest_version(self.url(body)), (0, "0.1.0"))
+
+    def test_http_failure_is_an_index_failure(self) -> None:
+        error = urllib.error.HTTPError("u", 503, "x", None, None)
+        with mock.patch("urllib.request.urlopen", side_effect=error), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(crate_info.latest_version("https://x"), (2, ""))
+
+
 class Checksum(IndexFixture):
     def test_listed_unlisted_and_unknown(self) -> None:
         url = self.url(GOOD)
@@ -138,11 +191,37 @@ class Cli(unittest.TestCase):
             ["has-version", "1.0.0", "--bogus"],
             ["has-version", "1.0.0", "--not-yanked", "extra"],
             ["checksum"],
+            ["latest-version", "extra"],
             ["name", "extra"],
             ["target-dir", "extra"],
         ):
             with self.subTest(argv), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(crate_info.main(argv), 64)
+
+
+class LatestVersionCli(IndexFixture):
+    def run_cli(self, body: "str | None") -> "tuple[int, str]":
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        if body is not None:
+            path = pathlib.Path(root.name, crate_info.index_path("MyCrate"))
+            path.parent.mkdir(parents=True)
+            path.write_text(body)
+        env = {"CRATE": "MyCrate", "CRATES_INDEX_URL": pathlib.Path(root.name).as_uri()}
+        out = io.StringIO()
+        with (
+            mock.patch.dict("os.environ", env),
+            mock.patch.object(crate_info, "load_manifest", return_value={}),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            return crate_info.main(["latest-version"]), out.getvalue()
+
+    def test_prints_the_version_only_on_success(self) -> None:
+        self.assertEqual(self.run_cli(lines(entry("0.1.0"), entry("0.2.0", yanked=True))), (0, "0.1.0\n"))
+        self.assertEqual(self.run_cli(lines(entry("0.1.0", yanked=True))), (1, ""))
+        self.assertEqual(self.run_cli(None), (1, ""))
+        self.assertEqual(self.run_cli("<html>\n"), (2, ""))
 
 
 class TargetDir(unittest.TestCase):
