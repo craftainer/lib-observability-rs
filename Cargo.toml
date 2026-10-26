@@ -10,7 +10,7 @@ version = "0.0.0"
 edition = "2024"
 # Matches rust-toolchain.toml (major.minor is enough for MSRV semantics).
 rust-version = "1.99"
-license = "GPL-3.0-or-later"
+license = "GPL-3.0-only"
 repository = "https://github.com/craftainer/lib-observability-rs"
 
 [workspace.lints.rust]
