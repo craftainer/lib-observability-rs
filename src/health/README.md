@@ -13,6 +13,9 @@ Health checks and the `/live` and `/ready` router.
   healthy, no feature).
 - `router.rs` — `router()`, the `/live` and `/ready` routes, generic over any
   state implementing `HasHealthRegistry`.
+- `info.rs` — `info_router()`, the opt-in `GET /info` route (`{"version",
+  "commit"}` from `APP_VERSION`/`APP_COMMIT`, read per request, empty or unset
+  is `null`); the host merges it next to `router()`. ADR 0006.
 
 `/live` never touches the registry, so a downstream outage cannot fail
 liveness. Each failing check catches its dependency's error and reports a

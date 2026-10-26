@@ -4,6 +4,9 @@
 //! and never touches the registry, so a downstream outage cannot fail
 //! liveness; `/ready` runs every registered [`HealthCheck`] concurrently.
 //!
+//! [`info::info_router`] is an opt-in `GET /info` (version and commit) that a
+//! host merges next to `router()`; nothing serves it unless the host does.
+//!
 //! Every check runs under a timeout ([`DEFAULT_CHECK_TIMEOUT`], 5 seconds,
 //! the default of `lib-observability-py`'s HTTP check), so one hung
 //! dependency reports unhealthy instead of stalling `/ready`. Set it for the
@@ -12,6 +15,7 @@
 //! `with_timeout` builder for it).
 
 pub mod checks;
+pub mod info;
 #[cfg(any(
     feature = "postgres",
     feature = "redis",
