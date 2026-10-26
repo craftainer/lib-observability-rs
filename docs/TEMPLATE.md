@@ -486,12 +486,16 @@ additions.
   | `cargo-llvm-cov` | unit and integration tests, `--fail-under-lines 100` | push |
   | `cargo-test-doc` | `cargo test --doc` (llvm-cov doesn't run doctests on stable) | push |
   | `cargo-deny` | licenses, advisories, bans, sources (`deny.toml`) | push |
-  | `cargo-semver-checks` | API compatibility against the latest crates.io release | push |
+  | `cargo-semver-checks` | API compatibility against the latest non-yanked crates.io release | push |
 
   `cargo-semver-checks` needs a published baseline. The hook asks the
   crates.io sparse index for the root package's name (read from
-  `Cargo.toml`): HTTP 200 runs the check, 404 (a crate's first release, and
-  this template) skips with a message, anything else fails. An instance
+  `Cargo.toml`): HTTP 200 runs the check against the highest non-yanked
+  version (`crate_info.py latest-version`, passed as `--baseline-version`:
+  by default cargo-semver-checks wants a baseline at or below the in-git
+  `0.0.0` and finds none), 404 (a crate's first release, and this template)
+  or a crate with every version yanked skips with a message, anything else
+  fails. That one version is used for every workspace member checked. An instance
   with a virtual workspace sets `CRATE` (the name and index URL come from
   `scripts/crate_info.py`, which the Makefile and release scripts share).
   The hook passes `--release-type "${SEMVER_RELEASE_TYPE:-minor}"`: the
