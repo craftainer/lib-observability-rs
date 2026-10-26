@@ -10,10 +10,14 @@ use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::{SdkTracer, SdkTracerProvider};
+use tracing::Metadata;
 use tracing_opentelemetry::OpenTelemetryLayer;
+use tracing_subscriber::Layer as _;
+use tracing_subscriber::filter::{FilterFn, Filtered};
 
 use super::SCOPE;
 use crate::Error;
+use crate::logs::otlp::exportable;
 
 /// The OTLP/HTTP span exporter, configured from the standard `OTEL_*`
 /// environment variables. Building it opens no connection.
@@ -84,13 +88,22 @@ pub(crate) fn meter_provider(
     ))
 }
 
+/// The trace layer's type: [`trace_layer`] filtered like the logs bridge.
+pub(crate) type TraceLayer<S> =
+    Filtered<OpenTelemetryLayer<S, SdkTracer>, FilterFn<fn(&Metadata<'_>) -> bool>, S>;
+
 /// The `tracing` layer that turns spans into OpenTelemetry spans of
-/// `provider`.
-pub(crate) fn trace_layer<S>(provider: &SdkTracerProvider) -> OpenTelemetryLayer<S, SdkTracer>
+/// `provider`. Spans of the exporter's own HTTP stack are left out, as they
+/// are from the logs bridge: exporting a batch would otherwise create spans
+/// that go into the next batch.
+pub(crate) fn trace_layer<S>(provider: &SdkTracerProvider) -> TraceLayer<S>
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
-    tracing_opentelemetry::layer().with_tracer(provider.tracer(SCOPE))
+    let filter: FilterFn<fn(&Metadata<'_>) -> bool> = FilterFn::new(exportable);
+    tracing_opentelemetry::layer()
+        .with_tracer(provider.tracer(SCOPE))
+        .with_filter(filter)
 }
 
 /// Makes the providers the process-wide OpenTelemetry ones (so code that
@@ -260,6 +273,22 @@ mod tests {
         let spans = exporter.get_finished_spans().unwrap();
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].name, "work");
+    }
+
+    #[test]
+    fn the_exporters_own_spans_are_not_exported() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let subscriber = tracing_subscriber::registry().with(trace_layer(&provider));
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info_span!(target: "hyper::client", "from the stack").in_scope(|| ());
+            tracing::info_span!(target: "myapp", "from the app").in_scope(|| ());
+        });
+        let spans = exporter.get_finished_spans().unwrap();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].name, "from the app");
     }
 
     #[test]

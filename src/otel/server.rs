@@ -18,10 +18,14 @@
 //!   caller's;
 //! - attributes: `http.request.method`, `url.path`, `http.route`,
 //!   `http.response.status_code`, and `http.request.header.x-request-id`
-//!   (a string array, read from the response, so put this layer outside
-//!   [`RequestIdLayer`](crate::request_id::RequestIdLayer) for the validated
-//!   ID); a 5xx response, or an error from the inner service, sets the span
-//!   status to error.
+//!   (a string array: the validated ID, whether this layer is outside
+//!   [`RequestIdLayer`](crate::request_id::RequestIdLayer) (read from the
+//!   response) or inside it (read from the request's [`RequestId`]));
+//!   a 5xx response, an error from the inner service, or a request dropped
+//!   before it completes (a client that went away) sets the span status to
+//!   error;
+//! - a method other than the nine standard ones is recorded as `_OTHER`, so a
+//!   client cannot make the metric's cardinality unbounded.
 //!
 //! The span is at ERROR level, like the request-ID span, so that no log
 //! filter below `off` drops it (`RUST_LOG=warn` would otherwise disable
@@ -49,6 +53,7 @@ use tracing::{Instrument, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use super::SCOPE;
+use crate::request_id::RequestId;
 
 /// Path prefixes that get no span and no metric unless changed.
 pub const DEFAULT_EXCLUDED_PREFIXES: [&str; 1] = ["/health/"];
@@ -159,55 +164,85 @@ struct Tracing {
     method: String,
     route: Option<String>,
     request_id_header: HeaderName,
-}
-
-/// What a response tells the span and the metric.
-struct Outcome {
-    status: StatusCode,
+    /// The ID from the request's extensions (this layer inside
+    /// `RequestIdLayer`), used when the response has none.
     request_id: Option<String>,
 }
 
+/// How a request ended, for the span and the metric.
+enum Outcome {
+    /// A response came back.
+    Response {
+        status: StatusCode,
+        request_id: Option<String>,
+    },
+    /// The inner service returned an error.
+    Failed,
+    /// The future was dropped before it completed.
+    Cancelled,
+}
+
+/// The standard HTTP methods; any other is recorded as `_OTHER`.
+const KNOWN_METHODS: [&str; 9] = [
+    "CONNECT", "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", "TRACE",
+];
+
 impl Outcome {
-    /// Reads `response`; the request ID is its `header`.
-    fn of<B>(response: &Response<B>, header: &HeaderName) -> Self {
-        Self {
-            status: response.status(),
-            request_id: response
-                .headers()
-                .get(header)
-                .and_then(|value| value.to_str().ok())
-                .map(str::to_owned),
+    /// Reads `response` (`None`: the inner service failed); the request ID
+    /// is its `header`.
+    fn of<B>(response: Option<&Response<B>>, header: &HeaderName) -> Self {
+        match response {
+            Some(response) => Self::Response {
+                status: response.status(),
+                request_id: response
+                    .headers()
+                    .get(header)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned),
+            },
+            None => Self::Failed,
         }
     }
 }
 
 impl Tracing {
-    /// Records the outcome (`None`: the inner service failed) on the span
-    /// and the histogram.
-    fn finish(self, outcome: Option<Outcome>) {
+    /// Records the outcome on the span and the histogram.
+    fn finish(self, outcome: Outcome) {
         let mut attributes = vec![KeyValue::new("http.request.method", self.method)];
         if let Some(route) = self.route {
             attributes.push(KeyValue::new("http.route", route));
         }
-        if let Some(outcome) = outcome {
-            let status = i64::from(outcome.status.as_u16());
-            self.span.record("http.response.status_code", status);
-            if outcome.status.is_server_error() {
-                self.span.record("otel.status_code", "ERROR");
+        let error_type = match outcome {
+            Outcome::Response { status, request_id } => {
+                let code = i64::from(status.as_u16());
+                self.span.record("http.response.status_code", code);
+                attributes.push(KeyValue::new("http.response.status_code", code));
+                if let Some(id) = request_id.or(self.request_id) {
+                    self.span.set_attribute(
+                        format!("http.request.header.{}", self.request_id_header),
+                        Value::Array(Array::String(vec![StringValue::from(id)])),
+                    );
+                }
+                status
+                    .is_server_error()
+                    .then(|| status.as_u16().to_string())
             }
-            attributes.push(KeyValue::new("http.response.status_code", status));
-            if let Some(id) = outcome.request_id {
-                self.span.set_attribute(
-                    format!("http.request.header.{}", self.request_id_header),
-                    Value::Array(Array::String(vec![StringValue::from(id)])),
-                );
-            }
-        } else {
+            Outcome::Failed => Some("_OTHER".to_owned()),
+            Outcome::Cancelled => Some("cancelled".to_owned()),
+        };
+        if let Some(error_type) = error_type {
             self.span.record("otel.status_code", "ERROR");
-            attributes.push(KeyValue::new("error.type", "_OTHER"));
+            attributes.push(KeyValue::new("error.type", error_type));
         }
         self.duration
             .record(self.start.elapsed().as_secs_f64(), &attributes);
+    }
+
+    /// Records a request whose future was dropped before it finished.
+    fn cancel(this: &mut Option<Self>) {
+        if let Some(tracing) = this.take() {
+            tracing.finish(Outcome::Cancelled);
+        }
     }
 }
 
@@ -220,6 +255,7 @@ impl ServerSpanLayer {
         path: &str,
         headers: &HeaderMap,
         matched: Option<&MatchedPath>,
+        request_id: Option<&RequestId>,
     ) -> Option<Tracing> {
         if self
             .excluded
@@ -228,7 +264,11 @@ impl ServerSpanLayer {
         {
             return None;
         }
-        let method = method.as_str().to_owned();
+        let method = if KNOWN_METHODS.contains(&method.as_str()) {
+            method.as_str().to_owned()
+        } else {
+            "_OTHER".to_owned()
+        };
         let route = matched.map(|matched| matched.as_str().to_owned());
         let name = route
             .as_ref()
@@ -258,6 +298,7 @@ impl ServerSpanLayer {
             method,
             route,
             request_id_header: self.request_id_header.clone(),
+            request_id: request_id.map(|id| id.as_str().to_owned()),
         })
     }
 }
@@ -275,10 +316,14 @@ where
     }
 
     fn call(&mut self, req: Request<B>) -> Self::Future {
-        let matched = req.extensions().get::<MatchedPath>();
-        let tracing = self
-            .layer
-            .begin(req.method(), req.uri().path(), req.headers(), matched);
+        let extensions = req.extensions();
+        let tracing = self.layer.begin(
+            req.method(),
+            req.uri().path(),
+            req.headers(),
+            extensions.get::<MatchedPath>(),
+            extensions.get::<RequestId>(),
+        );
         let span = tracing.as_ref().map_or_else(Span::none, |t| t.span.clone());
         let future = span.in_scope(|| self.inner.call(req));
         ResponseFuture {
@@ -296,6 +341,12 @@ pin_project! {
         inner: Instrumented<F>,
         tracing: Option<Tracing>,
     }
+
+    impl<F> PinnedDrop for ResponseFuture<F> {
+        fn drop(this: Pin<&mut Self>) {
+            Tracing::cancel(this.project().tracing);
+        }
+    }
 }
 
 impl<F, ResBody, E> Future for ResponseFuture<F>
@@ -308,10 +359,7 @@ where
         let this = self.project();
         let result = ready!(this.inner.poll(cx));
         if let Some(tracing) = this.tracing.take() {
-            let outcome = result
-                .as_ref()
-                .ok()
-                .map(|r| Outcome::of(r, &tracing.request_id_header));
+            let outcome = Outcome::of(result.as_ref().ok(), &tracing.request_id_header);
             tracing.finish(outcome);
         }
         Poll::Ready(result)
@@ -546,6 +594,87 @@ mod tests {
         );
         send(app(t.layer()), "/boom", &[]).await;
         assert!(matches!(t.spans()[0].status, Status::Error { .. }));
+        assert!(
+            t.durations()[0]
+                .0
+                .contains(&("error.type".to_owned(), "500".to_owned()))
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_method_is_recorded_as_other() {
+        let t = Telemetry::new();
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(trace_layer(&t.tracer)),
+        );
+        for method in ["FOO", "GET"] {
+            let request = Request::builder()
+                .method(method)
+                .uri("/items/1")
+                .body(Body::empty())
+                .unwrap();
+            let _ = app(t.layer()).oneshot(request).await.unwrap();
+        }
+        let spans = t.spans();
+        assert_eq!(
+            attr(&spans[0], "http.request.method").as_deref(),
+            Some("_OTHER")
+        );
+        assert_eq!(
+            attr(&spans[1], "http.request.method").as_deref(),
+            Some("GET")
+        );
+        let mut methods: Vec<String> = t
+            .durations()
+            .into_iter()
+            .flat_map(|(attributes, _)| attributes)
+            .filter(|(key, _)| key == "http.request.method")
+            .map(|(_, value)| value)
+            .collect();
+        methods.sort();
+        assert_eq!(methods, ["GET", "_OTHER"]);
+    }
+
+    #[tokio::test]
+    async fn a_dropped_request_is_recorded_as_cancelled() {
+        let t = Telemetry::new();
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(trace_layer(&t.tracer)),
+        );
+        let mut service =
+            ServiceBuilder::new()
+                .layer(t.layer())
+                .service(service_fn(|_: Request<Body>| {
+                    std::future::pending::<Result<Response<Body>, std::io::Error>>()
+                }));
+        let request = Request::builder().uri("/slow").body(Body::empty()).unwrap();
+        let future = service.ready().await.unwrap().call(request);
+        drop(future);
+        assert!(matches!(t.spans()[0].status, Status::Error { .. }));
+        let durations = t.durations();
+        assert!(
+            durations[0]
+                .0
+                .contains(&("error.type".to_owned(), "cancelled".to_owned()))
+        );
+        assert_eq!(durations[0].1, 1);
+    }
+
+    #[tokio::test]
+    async fn inside_the_request_id_layer_the_id_comes_from_the_request() {
+        let t = Telemetry::new();
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(trace_layer(&t.tracer)),
+        );
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(t.layer())
+            .layer(RequestIdLayer::new());
+        send(app, "/", &[("x-request-id", "in-1"), ("x-other", "y")]).await;
+        assert_eq!(
+            attr(&t.spans()[0], "http.request.header.x-request-id").as_deref(),
+            Some(r#"["in-1"]"#)
+        );
     }
 
     #[tokio::test]

@@ -94,9 +94,19 @@ see "Behaviour changes" below.
   it as an internal child of the server span, with `request_id` as an
   attribute. Python has no such span.
 - **The `http.request.header.x-request-id` attribute** (ADR 0004's deferred
-  item) is set by `ServerSpanLayer` from the *response* header, so the layer
-  must sit outside `RequestIdLayer` (`.layer(RequestIdLayer::new())`, then
-  `.layer(ServerSpanLayer::new())`) to see the validated ID.
+  item) is set by `ServerSpanLayer` with the validated ID in either layer
+  order: from the response header when the layer is outside `RequestIdLayer`,
+  from the request's `RequestId` extension when it is inside.
+- **Outcome edge cases.** A 5xx response, an error from the inner service and a
+  request dropped before it completes (a client that went away) all set the
+  span status to error and `error.type` on the metric (the status code,
+  `_OTHER`, `cancelled`). A method other than the nine standard ones is
+  recorded as `_OTHER` (semconv), so a client cannot grow the metric's
+  cardinality.
+- **The exporter's own stack is kept out of the trace layer** by the same
+  target filter as the logs bridge (hyper, h2, reqwest, rustls, the
+  OpenTelemetry crates), so exporting a batch cannot create spans that go into
+  the next one.
 - **Spans are at ERROR level**, like the request-ID span: tracing disables a
   span below the active filter, and `RUST_LOG=warn` would silently stop all
   tracing otherwise.
@@ -158,8 +168,12 @@ OpenTelemetry span when the trace layer is installed, that is, through
 `configure_telemetry`; a host that installs its own subscriber gets plain
 tracing spans and a working (but unexported) histogram.
 
-Redaction is by field name only; a secret inside a message string or a
-non-credential-named field is not caught. A custom event formatter replaces
+Redaction is by field name only; a secret inside a message string, a
+non-credential-named field or the `url.path` span attribute (a token in a URL
+path) is not caught. `/health` without the trailing slash is not excluded, as
+with Python's `/health/.*`; pass `with_excluded_prefixes` for other probes.
+`Telemetry`'s `Drop` blocks like `shutdown()` does (as `LoggingGuard`'s always
+did); an async `main` should call `shutdown` through `spawn_blocking` first. A custom event formatter replaces
 `tracing-subscriber`'s JSON format, so a feature of that formatter (flattened
 span lists, `RUST_LOG_FORMAT`) is not available.
 

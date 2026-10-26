@@ -26,7 +26,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::ser::{Serialize, SerializeMap, Serializer};
 use serde_json::Value;
 use tracing::field::{Field, Visit};
-use tracing::span::Attributes;
+use tracing::span::{Attributes, Record};
 use tracing::{Event, Id, Subscriber};
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::{Context, Layer};
@@ -253,6 +253,14 @@ where
         }
     }
 
+    fn on_record(&self, id: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
+        let mut field = RequestIdField::default();
+        values.record(&mut field);
+        if let (Some(request_id), Some(span)) = (field.0, ctx.span(id)) {
+            span.extensions_mut().replace(RequestIdValue(request_id));
+        }
+    }
+
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
         let mut fields = Fields::default();
         event.record(&mut fields);
@@ -440,6 +448,23 @@ mod tests {
         });
         assert_eq!(lines[0]["request_id"], "outer-id");
         assert_eq!(lines[1]["request_id"], "\"inner\"");
+    }
+
+    #[test]
+    fn a_request_id_recorded_after_the_span_was_made_is_used() {
+        let lines = lines_of(|| {
+            let span = tracing::error_span!("request", request_id = tracing::field::Empty);
+            let _entered = span.enter();
+            tracing::info!("before");
+            span.record("request_id", "late-id");
+            tracing::info!("after");
+            // Recording some other field leaves the ID alone.
+            span.record("other", 1);
+            tracing::info!("still");
+        });
+        assert!(lines[0].get("request_id").is_none());
+        assert_eq!(lines[1]["request_id"], "late-id");
+        assert_eq!(lines[2]["request_id"], "late-id");
     }
 
     #[test]

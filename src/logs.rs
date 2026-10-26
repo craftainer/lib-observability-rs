@@ -36,7 +36,7 @@
 
 mod json;
 #[cfg(feature = "otel")]
-mod otlp;
+pub(crate) mod otlp;
 
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;

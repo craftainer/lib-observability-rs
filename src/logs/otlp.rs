@@ -40,7 +40,7 @@ const EXPORTER_CRATES: [&str; 21] = [
 ];
 
 /// Whether an event may be exported: false for the exporter's own stack.
-fn exportable(metadata: &Metadata<'_>) -> bool {
+pub(crate) fn exportable(metadata: &Metadata<'_>) -> bool {
     exportable_target(metadata.target())
 }
 
