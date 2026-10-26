@@ -40,8 +40,8 @@ fn build_info(get: impl Fn(&str) -> Option<String>) -> BuildInfo {
     }
 }
 
-async fn info() -> Json<BuildInfo> {
-    Json(build_info(|name| std::env::var(name).ok()))
+fn env_lookup(name: &str) -> Option<String> {
+    std::env::var(name).ok()
 }
 
 /// The `GET /info` route, for a host to merge next to
@@ -52,12 +52,29 @@ async fn info() -> Json<BuildInfo> {
 /// let app = Router::new().nest("/health", health).with_state(state);
 /// ```
 ///
-/// Generic over the host's state type, which it never touches.
+/// Generic over the host's state type, which it never touches. The route is
+/// the bare `/info`: nest the router (as above) so it lands under `/health`
+/// and not at the root.
 pub fn info_router<S>() -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
-    Router::new().route("/info", get(info))
+    info_router_with(env_lookup)
+}
+
+/// [`info_router`] over an injectable variable lookup.
+fn info_router_with<S, F>(lookup: F) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+    F: Fn(&str) -> Option<String> + Clone + Send + Sync + 'static,
+{
+    Router::new().route(
+        "/info",
+        get(move || {
+            let lookup = lookup.clone();
+            async move { Json(build_info(lookup)) }
+        }),
+    )
 }
 
 #[cfg(test)]
@@ -71,7 +88,9 @@ mod tests {
     use std::sync::Arc;
     use tower::ServiceExt;
 
-    fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+    fn env(
+        pairs: &[(&str, &str)],
+    ) -> impl Fn(&str) -> Option<String> + Clone + Send + Sync + 'static {
         let map: HashMap<String, String> = pairs
             .iter()
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
@@ -157,6 +176,19 @@ mod tests {
         // environment, which this test does not mutate.
         assert!(object.contains_key("version") && object.contains_key("commit"));
         assert_eq!(object.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn reads_the_right_variables() {
+        let app =
+            info_router_with::<(), _>(env(&[("APP_VERSION", "1.2.3"), ("APP_COMMIT", "abc123")]));
+        let response = get_path(app.with_state(()), "/info").await;
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({"version": "1.2.3", "commit": "abc123"})
+        );
     }
 
     #[tokio::test]
