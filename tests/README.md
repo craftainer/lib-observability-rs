@@ -12,10 +12,12 @@ a dependent would, and runs against the devcontainer's backing services
   `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY`). Feature `s3`.
 - `http_health_check.rs` — `HttpHealthCheck` against RustFS's `/health`.
   Feature `http`.
-- `logs_configure_logging.rs` — `configure_logging`, which installs a
-  process-global subscriber and so can run only once per process; Cargo
-  builds each file here as its own process, so this is the only place it is
-  called.
+- `logs_configure_logging.rs` — the deprecated `configure_logging`, which
+  installs a process-global subscriber and so can run only once per process;
+  Cargo builds each file here as its own process, so this is the only place
+  it is called.
+- `telemetry_configure.rs` — `configure_telemetry` with no `OTEL_*` variable:
+  installs once, exports nothing, refuses a second call.
 
 - `request_id.rs` — `RequestIdLayer` behind an Axum router, in process (no
   backing service).

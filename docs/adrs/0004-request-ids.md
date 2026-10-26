@@ -39,12 +39,12 @@ Deviations from Python:
 
 - **A tracing span instead of a ContextVar.** The layer opens a `request`
   span with the field `request_id` around the inner service, so any event
-  logged while handling the request carries it. The crate's JSON lines print
-  span fields under `span` (the innermost span) and `spans` (all of them), not
-  as a top-level `request_id` as Python's formatter does. Flattening them
-  would need a custom event formatter; a log pipeline can read
-  `span.request_id` or `spans[].request_id`. Code that needs the ID in a
-  handler takes `Extension<RequestId>` (Python's `get_request_id()`).
+  logged while handling the request carries it. *Layout note (AX8, ADR
+  0005): the crate's own log layer, installed by `configure_telemetry`, now
+  prints it as a top-level `request_id` key, as Python's formatter does. Only
+  a plain `tracing-subscriber` JSON formatter, as `tests/request_id_logs.rs`
+  uses, prints span fields under `span` and `spans`.* Code that needs the ID
+  in a handler takes `Extension<RequestId>` (Python's `get_request_id()`).
 - **The span is at ERROR level.** A span below the active filter is
   disabled, so an INFO span would vanish under `RUST_LOG=warn` and warnings
   and errors would lose the ID, which Python's ContextVar never does. The
@@ -57,7 +57,7 @@ Deviations from Python:
 - **No span attribute is set.** Python sets
   `http.request.header.x-request-id` on the active OTel server span. The
   `request_id` field on the tracing span is what exists now; the OTel
-  attribute belongs with the server-span layer (AX8).
+  attribute belongs with the server-span layer (AX8, done: see ADR 0005).
 - **The header name is an `http::HeaderName`**, so an invalid name cannot be
   configured. Python takes a string and fails when encoding it.
 - Python also handles WebSocket scopes explicitly; in Axum a WebSocket

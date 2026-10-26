@@ -44,9 +44,11 @@ repository.workspace = true
 # time.
 [dependencies]
 async-trait = "=0.1.92"
-axum = { version = "=0.8.9", default-features = false, features = ["json", "tokio"] }
+axum = { version = "=0.8.9", default-features = false, features = ["json", "matched-path", "tokio"] }
 futures = { version = "=0.3.34", default-features = false, features = ["std", "async-await"] }
 serde = { version = "=1.0.229", features = ["derive"] }
+# The JSON log lines.
+serde_json = "=1.0.151"
 thiserror = "=2.0.21"
 # The request-ID layer: tower's two traits (not the full `tower` crate),
 # `pin-project-lite` for its response future and `uuid` for a fresh ID.
@@ -70,14 +72,17 @@ sqlx = { version = "=0.9.0", optional = true, default-features = false, features
 # *blocking* reqwest client is deliberate: the batch processor exports from
 # its own plain thread, where the async client panics ("there is no reactor
 # running") and so exports nothing. "reqwest-rustls" makes https endpoints work.
-opentelemetry = { version = "=0.32.0", optional = true, default-features = false, features = ["logs"] }
+opentelemetry = { version = "=0.32.0", optional = true, default-features = false, features = ["logs", "trace", "metrics"] }
 opentelemetry-appender-tracing = { version = "=0.32.0", optional = true, default-features = false }
-opentelemetry-otlp = { version = "=0.32.0", optional = true, default-features = false, features = ["logs", "http-proto", "reqwest-blocking-client", "reqwest-rustls"] }
-opentelemetry_sdk = { version = "=0.32.1", optional = true, default-features = false, features = ["logs", "rt-tokio"] }
+opentelemetry-otlp = { version = "=0.32.0", optional = true, default-features = false, features = ["logs", "trace", "metrics", "http-proto", "reqwest-blocking-client", "reqwest-rustls"] }
+opentelemetry_sdk = { version = "=0.32.1", optional = true, default-features = false, features = ["logs", "trace", "metrics", "rt-tokio"] }
+# Bridges `tracing` spans to OpenTelemetry spans (0.33 pairs with opentelemetry 0.32).
+tracing-opentelemetry = { version = "=0.33.0", optional = true, default-features = false }
 
 [dev-dependencies]
 aws-config = "=1.8.11"
-serde_json = "=1.0.151"
+# The in-memory exporters the telemetry tests read spans and metrics from.
+opentelemetry_sdk = { version = "=0.32.1", features = ["testing"] }
 tokio = { version = "=1.54.1", features = ["macros", "rt-multi-thread", "time"] }
 tower = { version = "=0.5.3", features = ["util"] }
 
@@ -96,13 +101,15 @@ http = ["dep:reqwest"]
 # modes that run without infrastructure. Off by default so production builds
 # cannot register a check that always says healthy.
 testing = []
-# `otel`: `logs::configure_logging` also exports logs over OTLP/HTTP when
-# the standard `OTEL_EXPORTER_OTLP_*` endpoint variables are set.
+# `otel`: `logs::configure_telemetry` also exports traces, metrics and logs
+# over OTLP/HTTP when the standard `OTEL_EXPORTER_OTLP_*` endpoint variables
+# are set, and the `otel` module (server spans, request metrics) is built.
 otel = [
   "dep:opentelemetry",
   "dep:opentelemetry-appender-tracing",
   "dep:opentelemetry-otlp",
   "dep:opentelemetry_sdk",
+  "dep:tracing-opentelemetry",
 ]
 
 [lints]
