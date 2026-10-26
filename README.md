@@ -32,6 +32,13 @@ for why the crate exists and where its boundary is.
   keep it until exit and call `shutdown()` (or let it drop) so the last batch
   is flushed. An exporter that cannot be built is an `Error::ExporterBuild`
   (`configure_logging_without_export` is the JSON-only fallback).
+- `request_id::RequestIdLayer`: a tower layer (no feature needed) that reads
+  `X-Request-ID` (name configurable), keeps it only if it is 1 to 128
+  characters from `[A-Za-z0-9._-]` and otherwise uses a fresh UUID, echoes it
+  on the response, stores a `RequestId` in the request's extensions
+  (`Extension<RequestId>`) and records it as the `request_id` field of a
+  `request` tracing span, so the JSON logs carry it. See
+  [`docs/adrs/0004-request-ids.md`](docs/adrs/0004-request-ids.md).
 - `Error`, the crate's own error type.
 
 ```rust,ignore

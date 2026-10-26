@@ -12,8 +12,12 @@ implements one accessor trait.
   feature (`logs/otlp.rs`) also OTLP/HTTP log export when the standard
   `OTEL_EXPORTER_OTLP_*` endpoint variables are set.
 - `error.rs` — `Error`, the crate's own error type.
+- `request_id.rs` — `RequestIdLayer`, a tower layer that validates or creates
+  the `X-Request-ID` header, echoes it, stores a `RequestId` in the request's
+  extensions and puts it in a `request` span as `request_id`. No feature: it
+  needs no backing-service client (ADR 0004).
 
-Request IDs, OpenTelemetry traces and metrics, and `/health/info` are planned
+OpenTelemetry traces and metrics, and `/health/info` are planned
 as their own modules (see `docs/adrs/0002-extract-the-observability-layer.md`).
 
 ## Do
