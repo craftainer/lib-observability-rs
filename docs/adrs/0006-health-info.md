@@ -29,7 +29,7 @@ variables read on every request.
 Deviations from Python:
 
 - **No package-version fallback.** A library cannot know its host's package
-  version, so an unset `APP_VERSION` is `null` (user decision, 2026-10-27).
+  version, so an unset `APP_VERSION` is `null` (user decision, 2026-10-26).
   Python's `info_package` has no counterpart.
 - **A non-UTF-8 value is `null`.** Python decodes it; Rust's `env::var`
   reports an error, which is treated as unset.
