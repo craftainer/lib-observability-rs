@@ -21,6 +21,11 @@
       "automerge": false
     },
     {
+      "description": "Library crates declare caret ranges (docs/TEMPLATE.md, Rust crate template notes). update-lockfile keeps them: an in-range release only updates Cargo.lock, and the range is replaced only when a release falls outside it. bump would raise every floor and narrow what dependents can use.",
+      "matchManagers": ["cargo"],
+      "rangeStrategy": "update-lockfile"
+    },
+    {
       "description": "The Rust version is pinned in scripts/develop.d/10-rust.sh, rust-toolchain.toml (Renovate's built-in rust-toolchain manager) and Cargo.toml's rust-version (major.minor), and all three must move together: one group, out of the automerged one, for manual review.",
       "matchDepNames": ["rust"],
       "groupName": "rust toolchain",

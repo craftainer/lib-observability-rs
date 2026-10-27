@@ -56,6 +56,20 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
 
+      # Picks the cargo-semver-checks release type: `major` when the PR
+      # title (pull_request) or the head commit's subject (push to main, a
+      # squash merge carries the PR title) has the Conventional Commits `!`
+      # marker, else empty (the hook defaults to `minor`). Untrusted text
+      # reaches the script only through env, never through `run:` text.
+      - name: Choose semver-checks release type
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          python3 -I .github/scripts/semver_release_type.py | tee -a "$GITHUB_ENV"
+
       # --hook-stage manual runs every hook (both the fast pre-commit-stage
       # ones and the extensive pre-push-stage ones) in one pass, inside the
       # devcontainer -- the same environment (uv, prek, playwright, ...) a
@@ -68,6 +82,10 @@ jobs:
           # rate-limited (HTTP 429). Not forwarded into the container.
           GITHUB_TOKEN: ${{ github.token }}
         with:
+          # Name only: passes the runner's SEMVER_RELEASE_TYPE (set by the
+          # step above) into the container; empty means the hook's `minor`.
+          env: |
+            SEMVER_RELEASE_TYPE
           runCmd: prek run --all-files --hook-stage manual
 
       # devcontainers/ci starts the full compose stack (see

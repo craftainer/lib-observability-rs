@@ -475,6 +475,24 @@ additions.
   compiler. `.github/renovate.json` bumps all three in one grouped PR (the
   "rust toolchain" group, not automerged); if you bump by hand, change all
   three.
+- **Dependencies are caret ranges, not exact pins.** This overrides the
+  exact-pin rule above for what a published library declares in
+  `Cargo.toml` (`[dependencies]` and `[dev-dependencies]`): write
+  `thiserror = "2.0.21"` (Cargo reads that as `^2.0.21`), never
+  `=2.0.21`. An exact pin in a library cannot be unified with an app's or
+  another library's requirement on the same crate, so the dependent's
+  build fails; the `^` floor states the oldest release the crate is
+  known to work with
+  ([Cargo: specifying dependencies](https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html)).
+  `Cargo.lock` is still committed (see `.gitignore`), so CI and the
+  devcontainer build the exact versions the lock records; it is not
+  published and does not constrain dependents. An application built from
+  a crate template keeps exact `=` pins plus its `Cargo.lock`. Renovate's
+  `cargo` manager runs with `rangeStrategy: update-lockfile`
+  (`.github/renovate.json`): in-range updates change only `Cargo.lock`,
+  and the `Cargo.toml` range is rewritten only when a release falls
+  outside it (a new major). It does not raise the floor on every update
+  (`bump` would), which would needlessly narrow what dependents can use.
 - **Checks.** Run through `prek` like every other check:
 
   | Hook | Command | Stage |
@@ -502,7 +520,15 @@ additions.
   in-git version is a permanent `0.0.0`, so without it cargo-semver-checks
   would infer the bump from the version number. A maintainer planning a
   breaking release runs the hook with `SEMVER_RELEASE_TYPE=major`; use
-  `patch` for a release that must not add API. `prek ... --hook-stage manual`
+  `patch` for a release that must not add API. In CI, `checks.yml` sets
+  `major` itself when the change is marked breaking with the Conventional
+  Commits `!` marker (`feat(bulk)!: ...`, `fix!: ...`): it reads the PR title
+  on `pull_request` events and the head commit's subject line on pushes to
+  `main` (a squash merge carries the PR title, so `main` stays green between
+  a breaking merge and its release). Any other change, event or a
+  `BREAKING CHANGE:` footer alone runs as `minor`. The decision lives in
+  `.github/scripts/semver_release_type.py`, which receives the untrusted
+  title through the environment only. `prek ... --hook-stage manual`
   runs all of them.
 - **Build output and CARGO_HOME.** `target/` is in the repository
   directory (a bind mount in the devcontainer, gitignored), so a large

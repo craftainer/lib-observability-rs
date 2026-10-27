@@ -5,7 +5,11 @@
   on pull requests, and on demand — inside the actual devcontainer (via
   [`devcontainers/ci`](https://github.com/devcontainers/ci)), under a
   per-run `COMPOSE_PROJECT_NAME` that a final step tears down. Runs as a
-  two-leg `amd64`/`arm64` matrix (see "Architecture matrix" below).
+  two-leg `amd64`/`arm64` matrix (see "Architecture matrix" below). A
+  step before the hooks runs `../scripts/semver_release_type.py` and
+  forwards `SEMVER_RELEASE_TYPE` into the container, so a `!`-marked PR
+  title (or, on `main`, head commit subject) runs `cargo semver-checks` as
+  `major` instead of the default `minor`.
 - `smoke.yml` — builds the `runner` stage of the root `Dockerfile` via
   the root `compose.yml`, starts it against the real Postgres, RustFS,
   Redis, and Keycloak backing services, and confirms `/health/live` and
