@@ -4,6 +4,12 @@
   tags and prints the next `tag=` / `version=` / `prerelease=` for
   `../workflows/release.yml`, given a release channel and a SemVer 2
   bump.
+- `semver_release_type.py` — prints `SEMVER_RELEASE_TYPE=major` (else an
+  empty value) for `$GITHUB_ENV`, from the PR title or, on pushes to
+  `main`, the head commit's subject: `major` when it has the Conventional
+  Commits `!` marker. `../workflows/checks.yml` forwards it to the
+  `cargo-semver-checks` hook; its text input arrives via env only.
+- `test_semver_release_type.py` — `unittest` tests for it.
 - `template_sync_manifest.py` — parses `../template-sync-manifest.yml`
   and checks that every git-tracked path matches exactly one tier;
   backs both the `template-sync-manifest` prek hook and

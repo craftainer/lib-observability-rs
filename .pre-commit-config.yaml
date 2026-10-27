@@ -161,7 +161,9 @@ repos:
         # is the real version), which cargo-semver-checks would otherwise
         # treat as "no bump" and demand a major-level check for. Default `minor`; a maintainer
         # planning a breaking release sets SEMVER_RELEASE_TYPE=major, a
-        # patch-only one `patch`.
+        # patch-only one `patch`. CI sets `major` itself when the PR title
+        # (or, on main, the head commit subject) has the Conventional Commits
+        # `!` marker, e.g. `feat(x)!: ...` (.github/scripts/semver_release_type.py).
         entry: >-
           bash -c 'info=$(python3 -I scripts/crate_info.py index-info) || exit 1;
           read -r name url <<<"$info";
