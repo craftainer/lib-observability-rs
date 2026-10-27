@@ -4,6 +4,9 @@
 
 Accepted
 
+2026-10-26: `/health/info`, listed below as a later item, is now provided by the
+`/health/info` router; see [ADR 0006](0006-health-info.md).
+
 ## Context
 
 `template-axum` keeps its readiness machinery in `src/health/` (the

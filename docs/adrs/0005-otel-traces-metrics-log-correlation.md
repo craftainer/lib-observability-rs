@@ -4,6 +4,10 @@
 
 Accepted
 
+2026-10-26: the level-names deviation below no longer holds. The JSON log `level`
+field reports `WARN` as `WARNING` (as Python's `logging` does); `TRACE`, `DEBUG`,
+`INFO` and `ERROR` are unchanged (LV1, released in 0.3.0).
+
 ## Context
 
 AX8 adds what `lib-observability-py` has in `otel.py`, `logs.py` and its

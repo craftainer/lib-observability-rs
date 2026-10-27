@@ -6,7 +6,8 @@
 //!  "message":"created","order_id":7,"trace_id":"...","span_id":"...","request_id":"..."}
 //! ```
 //!
-//! - `timestamp`, `level` (`TRACE` to `ERROR`, tracing's names), `logger` (the
+//! - `timestamp`, `level` (`TRACE`, `DEBUG`, `INFO`, `WARNING`, `ERROR`: tracing's
+//!   names, except `WARN` is `WARNING` as in Python's `logging`), `logger` (the
 //!   event's target) and `message` are always there.
 //! - Every other event field is a top-level key. A field whose name contains
 //!   `token`, `password`, `secret`, `authorization`, `claims` or `credential`
@@ -85,6 +86,16 @@ impl<W> JsonLayer<W> {
             #[cfg(feature = "otel")]
             dispatch: std::sync::OnceLock::new(),
         }
+    }
+}
+
+/// The `level` string for `level`: tracing's name, except `WARN` is `WARNING`
+/// (Python's name, which log pipelines shared with `lib-observability-py` expect).
+fn level_name(level: tracing::Level) -> &'static str {
+    if level == tracing::Level::WARN {
+        "WARNING"
+    } else {
+        level.as_str()
     }
 }
 
@@ -270,7 +281,10 @@ where
                 "timestamp".to_owned(),
                 Value::String(rfc3339(SystemTime::now())),
             ),
-            ("level".to_owned(), Value::from(metadata.level().as_str())),
+            (
+                "level".to_owned(),
+                Value::from(level_name(*metadata.level())),
+            ),
             ("logger".to_owned(), Value::from(metadata.target())),
             ("message".to_owned(), Value::String(fields.message)),
         ];
@@ -342,10 +356,23 @@ mod tests {
     }
 
     #[test]
+    fn levels_are_reported_with_pythons_names() {
+        let lines = lines_of(|| {
+            tracing::trace!("t");
+            tracing::debug!("d");
+            tracing::info!("i");
+            tracing::warn!("w");
+            tracing::error!("e");
+        });
+        let levels: Vec<&str> = lines.iter().map(|l| l["level"].as_str().unwrap()).collect();
+        assert_eq!(levels, ["TRACE", "DEBUG", "INFO", "WARNING", "ERROR"]);
+    }
+
+    #[test]
     fn a_line_is_flat_and_ordered() {
         let output = output_of(|| tracing::warn!(order_id = 7, "created"));
         let line: Value = serde_json::from_str(output.trim_end()).unwrap();
-        assert_eq!(line["level"], "WARN");
+        assert_eq!(line["level"], "WARNING");
         assert_eq!(line["message"], "created");
         assert_eq!(line["order_id"], 7);
         assert!(line["logger"].as_str().unwrap().contains("json"));
