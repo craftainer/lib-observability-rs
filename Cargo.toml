@@ -40,51 +40,51 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# Exact pins (`=x.y.z`), as in template-axum, so Renovate bumps them one at a
-# time.
+# Caret ranges (`x.y.z` means `^x.y.z`), not exact pins: a library must let
+# its dependents unify versions. Cargo.lock still records the exact versions.
 [dependencies]
-async-trait = "=0.1.92"
-axum = { version = "=0.8.9", default-features = false, features = ["json", "matched-path", "tokio"] }
-futures = { version = "=0.3.34", default-features = false, features = ["std", "async-await"] }
-serde = { version = "=1.0.229", features = ["derive"] }
+async-trait = "0.1.92"
+axum = { version = "0.8.9", default-features = false, features = ["json", "matched-path", "tokio"] }
+futures = { version = "0.3.34", default-features = false, features = ["std", "async-await"] }
+serde = { version = "1.0.229", features = ["derive"] }
 # The JSON log lines.
-serde_json = "=1.0.151"
-thiserror = "=2.0.21"
+serde_json = "1.0.151"
+thiserror = "2.0.21"
 # The request-ID layer: tower's two traits (not the full `tower` crate),
 # `pin-project-lite` for its response future and `uuid` for a fresh ID.
-pin-project-lite = "=0.2.17"
-tower-layer = "=0.3.3"
-tower-service = "=0.3.3"
-uuid = { version = "=1.28.0", default-features = false, features = ["v4"] }
+pin-project-lite = "0.2.17"
+tower-layer = "0.3.3"
+tower-service = "0.3.3"
+uuid = { version = "1.28.0", default-features = false, features = ["v4"] }
 # `time` for the per-check timeout; `sync` for the Redis check's lazy connection.
-tokio = { version = "=1.54.1", default-features = false, features = ["sync", "time"] }
-tracing = "=0.1.44"
-tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["env-filter", "fmt", "json", "registry", "std"] }
+tokio = { version = "1.54.1", default-features = false, features = ["sync", "time"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "fmt", "json", "registry", "std"] }
 
 # Optional, one feature per backing service a ready-made check talks to.
-aws-sdk-s3 = { version = "=1.112.0", optional = true, default-features = false, features = ["default-https-client", "rt-tokio", "behavior-version-latest"] }
-redis = { version = "=1.7.0", optional = true, default-features = false, features = ["tokio-comp", "connection-manager"] }
-reqwest = { version = "=0.13.5", optional = true, default-features = false, features = ["rustls"] }
-sqlx = { version = "=0.9.0", optional = true, default-features = false, features = ["runtime-tokio", "postgres"] }
+aws-sdk-s3 = { version = "1.112.0", optional = true, default-features = false, features = ["default-https-client", "rt-tokio", "behavior-version-latest"] }
+redis = { version = "1.7.0", optional = true, default-features = false, features = ["tokio-comp", "connection-manager"] }
+reqwest = { version = "0.13.5", optional = true, default-features = false, features = ["rustls"] }
+sqlx = { version = "0.9.0", optional = true, default-features = false, features = ["runtime-tokio", "postgres"] }
 
 # OTLP log export. "http-proto" over reqwest + rustls, not the default gRPC
 # exporter, so the one reqwest/rustls stack serves every feature. The
 # *blocking* reqwest client is deliberate: the batch processor exports from
 # its own plain thread, where the async client panics ("there is no reactor
 # running") and so exports nothing. "reqwest-rustls" makes https endpoints work.
-opentelemetry = { version = "=0.32.0", optional = true, default-features = false, features = ["logs", "trace", "metrics"] }
-opentelemetry-appender-tracing = { version = "=0.32.0", optional = true, default-features = false }
-opentelemetry-otlp = { version = "=0.32.0", optional = true, default-features = false, features = ["logs", "trace", "metrics", "http-proto", "reqwest-blocking-client", "reqwest-rustls"] }
-opentelemetry_sdk = { version = "=0.32.1", optional = true, default-features = false, features = ["logs", "trace", "metrics", "rt-tokio"] }
+opentelemetry = { version = "0.32.0", optional = true, default-features = false, features = ["logs", "trace", "metrics"] }
+opentelemetry-appender-tracing = { version = "0.32.0", optional = true, default-features = false }
+opentelemetry-otlp = { version = "0.32.0", optional = true, default-features = false, features = ["logs", "trace", "metrics", "http-proto", "reqwest-blocking-client", "reqwest-rustls"] }
+opentelemetry_sdk = { version = "0.32.1", optional = true, default-features = false, features = ["logs", "trace", "metrics", "rt-tokio"] }
 # Bridges `tracing` spans to OpenTelemetry spans (0.33 pairs with opentelemetry 0.32).
-tracing-opentelemetry = { version = "=0.33.0", optional = true, default-features = false }
+tracing-opentelemetry = { version = "0.33.0", optional = true, default-features = false }
 
 [dev-dependencies]
-aws-config = "=1.8.11"
+aws-config = "1.8.11"
 # The in-memory exporters the telemetry tests read spans and metrics from.
-opentelemetry_sdk = { version = "=0.32.1", features = ["testing"] }
-tokio = { version = "=1.54.1", features = ["macros", "rt-multi-thread", "time"] }
-tower = { version = "=0.5.3", features = ["util"] }
+opentelemetry_sdk = { version = "0.32.1", features = ["testing"] }
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "time"] }
+tower = { version = "0.5.3", features = ["util"] }
 
 [features]
 # All off by default: a service pulls in only the clients it has.
