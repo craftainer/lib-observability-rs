@@ -19,6 +19,13 @@ a dependent would, and runs against the devcontainer's backing services
 - `telemetry_configure.rs` — `configure_telemetry` with no `OTEL_*` variable:
   installs once, exports nothing, refuses a second call.
 
+- `analytics.rs` — the `analytics` module end to end against a mock Umami
+  (wiremock, no real Umami): the log adapter, every Umami reply, the redirect,
+  timeout and connection-failure paths. Installs a global subscriber to read the
+  log lines, so it is a process of its own. Feature `analytics`.
+- `analytics_telemetry.rs` — `analytics::init` with a `Telemetry` handle that
+  exports nothing. Its own process (it installs the global subscriber).
+
 - `request_id.rs` — `RequestIdLayer` behind an Axum router, in process (no
   backing service).
 - `request_id_logs.rs` — the `request_id` span field in the JSON log lines;

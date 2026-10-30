@@ -53,6 +53,9 @@ for why the crate exists and where its boundary is.
   (`Extension<RequestId>`) and records it as the `request_id` field of a
   `request` tracing span, so the JSON logs carry it. See
   [`docs/adrs/0004-request-ids.md`](docs/adrs/0004-request-ids.md).
+- `analytics` (feature `analytics`): `analytics::track(name, props, url)`,
+  vendor-neutral product analytics configured by `ANALYTICS_*` variables; see
+  "Analytics" below.
 - `Error`, the crate's own error type.
 
 ```rust,ignore
@@ -82,8 +85,56 @@ All off by default, so a service compiles only the clients it has.
   `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES`; `APP_VERSION` becomes
   `service.version`. Adds the `otel` module (`ServerSpanLayer`, and with
   `postgres` `instrument_db`).
+- `analytics`: the `analytics` module (see "Analytics"). Its `otel` backend
+  also needs `otel`.
 - `testing`: `MockHealthCheck`. Enable it from a dev-dependency or a
   test/mock mode, not in production builds.
+
+## Analytics
+
+Feature `analytics`, [ADR 0007](docs/adrs/0007-add-vendor-neutral-analytics-feature.md).
+`track(name, props, url)` sends a product event to the backend chosen by
+`ANALYTICS_BACKEND`:
+
+| Variable | Meaning |
+| --- | --- |
+| `ANALYTICS_ENABLED` | default true |
+| `ANALYTICS_BACKEND` | `none` (default), `log`, `umami`, `otel` |
+| `ANALYTICS_ENDPOINT`, `ANALYTICS_SITE_ID` | Umami base URL (`/api/batch` is appended; no redirects are followed) and website ID; `umami` without both is off |
+| `ANALYTICS_HOSTNAME` | sent as `payload.hostname` |
+| `ANALYTICS_CONSENT` | `implied` (default) or `opt-in` |
+| `ANALYTICS_RESPECT_GPC` | default true |
+| `ANALYTICS_GEO` | `none` (default) or `coarse`; no effect (events carry `ip=server`) |
+| `ANALYTICS_PROP_KEYS` | comma-separated allowlist of property keys; empty by default |
+
+An unknown value falls back to its default with a warning. Names match
+`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$` (at most 50 characters) or the event is
+dropped; properties are scalars on the allowlist (strings cut to 200
+characters); `url` is reduced to its path.
+
+```rust,ignore
+use craftainer_observability::analytics::{self, AnalyticsConfig, RequestContext};
+
+let telemetry = configure_telemetry()?;
+analytics::init(&AnalyticsConfig::from_env(), Some(&telemetry)); // optional
+// In a request, wrap the handler's future so GPC / opt-in are honoured:
+RequestContext { gpc: sec_gpc_header == Some("1"), consent: false }
+    .scope(async { analytics::track("signup.done", &[("plan", "pro".into())], Some("/signup")) })
+    .await;
+// Sync code holds the guard instead: let _g = ctx.enter();
+analytics::shutdown(); // before exit; blocking, use spawn_blocking in async code
+```
+
+The context is a thread-local set around every poll of the wrapped future: it
+does not follow into tasks or threads the handler spawns unless they are
+wrapped as well. The Umami backend queues up to 1000 events, posts at most 50
+per request every 5 s from its own thread with a 2 s timeout, and drops on
+overflow. The `log` backend writes a `tracing` event (target
+`craftainer_observability::analytics::events`, fields `analytics_event`,
+`analytics_url`, `analytics_props`); the `otel` backend (features `analytics`
+and `otel`, a `Telemetry` passed to `init`) emits a log record with the flat
+attributes `analytics_event`, `analytics_url` and `analytics_prop_<key>` on the
+same logger provider as the rest of the telemetry.
 
 ### sqlx TLS
 

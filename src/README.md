@@ -19,6 +19,9 @@ implements one accessor trait.
   for, the shared `Resource`), `providers.rs` (tracer and meter providers, the
   trace layer, `Providers` for flush and shutdown), `server.rs`
   (`ServerSpanLayer`), `db.rs` (`instrument_db`, with `postgres`). ADR 0005.
+- `analytics/` — feature `analytics`: `track()`, the `ANALYTICS_*` adapters
+  (none, log, otel, Umami) and the GPC-aware `RequestContext`
+  (`analytics/README.md`, ADR 0007).
 - `error.rs` — `Error`, the crate's own error type.
 - `request_id.rs` — `RequestIdLayer`, a tower layer that validates or creates
   the `X-Request-ID` header, echoes it, stores a `RequestId` in the request's
