@@ -85,6 +85,8 @@ aws-config = "1.8.11"
 opentelemetry_sdk = { version = "0.32.1", features = ["testing"] }
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "time"] }
 tower = { version = "0.5.3", features = ["util"] }
+# A mock Umami for the analytics tests (no real Umami).
+wiremock = "0.6.5"
 
 [features]
 # All off by default: a service pulls in only the clients it has.
@@ -97,6 +99,10 @@ redis = ["dep:redis"]
 s3 = ["dep:aws-sdk-s3"]
 # `http`: `HttpHealthCheck` (GET a URL, expect 2xx).
 http = ["dep:reqwest"]
+# `analytics`: the `analytics` module, `track()` over the `ANALYTICS_*`
+# adapters. The Umami adapter posts from its own thread with reqwest's
+# blocking client (ADR 0007); the `otel` backend also needs the `otel` feature.
+analytics = ["dep:reqwest", "reqwest/blocking"]
 # `testing`: `MockHealthCheck`, an always-healthy stub for tests and for
 # modes that run without infrastructure. Off by default so production builds
 # cannot register a check that always says healthy.
@@ -131,3 +137,12 @@ required-features = ["s3"]
 [[test]]
 name = "http_health_check"
 required-features = ["http"]
+
+# In-process, against a mock Umami; each installs the global subscriber.
+[[test]]
+name = "analytics"
+required-features = ["analytics"]
+
+[[test]]
+name = "analytics_telemetry"
+required-features = ["analytics"]

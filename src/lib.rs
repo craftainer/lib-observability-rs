@@ -21,6 +21,8 @@
 //! - `otel`: OTLP/HTTP export of logs, traces and metrics from
 //!   [`configure_telemetry`], plus the `otel` module (`ServerSpanLayer`,
 //!   and with `postgres` also `instrument_db`).
+//! - `analytics`: [`analytics::track`] and the `ANALYTICS_*` adapters (none,
+//!   log, otel with the `otel` feature, Umami).
 //! - `testing`: `health::checks::MockHealthCheck`, an always-healthy stub.
 //!
 //! `sqlx` is built without a TLS backend; see the README's "sqlx TLS".
@@ -48,6 +50,8 @@
 //! registry.register(Box::new(Always)).expect("names are unique");
 //! ```
 
+#[cfg(feature = "analytics")]
+pub mod analytics;
 pub mod error;
 pub mod health;
 pub mod logs;

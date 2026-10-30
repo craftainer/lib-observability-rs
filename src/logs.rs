@@ -65,6 +65,13 @@ impl Telemetry {
         false
     }
 
+    /// The logger provider that exports logs over OTLP, shared with the
+    /// analytics `otel` backend (one provider per process).
+    #[cfg(all(feature = "otel", feature = "analytics"))]
+    pub(crate) fn logger_provider(&self) -> Option<&opentelemetry_sdk::logs::SdkLoggerProvider> {
+        self.providers.logger.as_ref()
+    }
+
     /// Exports everything buffered so far, blocking until done or the SDK's
     /// timeout. Every exporter is tried; the first failure is returned.
     ///
@@ -87,6 +94,17 @@ impl Telemetry {
         #[cfg(feature = "otel")]
         self.providers.shutdown()?;
         Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "analytics"))]
+impl Telemetry {
+    /// A handle that exports nothing, for tests of the code that takes one.
+    pub(crate) fn inert() -> Self {
+        Self {
+            #[cfg(feature = "otel")]
+            providers: crate::otel::Providers::default(),
+        }
     }
 }
 
@@ -275,6 +293,8 @@ mod tests {
             providers: crate::otel::Providers::default(),
         };
         assert!(!telemetry.is_exporting());
+        #[cfg(all(feature = "otel", feature = "analytics"))]
+        assert!(telemetry.logger_provider().is_none());
         telemetry.force_flush().unwrap();
         telemetry.shutdown().unwrap();
         telemetry.shutdown().unwrap();
