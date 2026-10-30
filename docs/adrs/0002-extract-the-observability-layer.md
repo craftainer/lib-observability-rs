@@ -4,8 +4,8 @@
 
 Accepted
 
-2026-10-26: `/health/info`, listed below as a later item, is now provided by the
-`/health/info` router; see [ADR 0006](0006-health-info.md).
+2026-10-26: `/health/info`, listed below as a later item, is now provided by
+`health::info::info_router`; see [ADR 0006](0006-health-info.md).
 
 ## Context
 
