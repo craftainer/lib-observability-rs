@@ -2,7 +2,7 @@
 # compose-generated default network (see ../README.md).
 services:
   redis:
-    image: valkey/valkey:9.1.2-alpine
+    image: valkey/valkey:9.1.3-alpine
     restart: unless-stopped
     command: valkey-server --appendonly yes
     volumes:
