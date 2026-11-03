@@ -39,7 +39,7 @@ repos:
         stages: [pre-commit, manual]
 
   - repo: https://github.com/compilerla/conventional-pre-commit
-    rev: v4.4.0
+    rev: v4.5.0
     hooks:
       # No "manual" stage here, unlike every other hook in this file: this
       # one needs the actual commit-message file git passes at the

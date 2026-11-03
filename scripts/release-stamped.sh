@@ -3,11 +3,22 @@
 # refreshed to match), then restores both, so the checkout stays clean: the
 # version lives only in the git tag.
 #
-# Usage: release-stamped.sh <command> [args...]
+# Usage: release-stamped.sh [--scrub] <command> [args...]
 # With RELEASE_VERSION unset the command runs unchanged (a local build).
+# --scrub runs the command without CI credentials in its environment (see
+# `scrubbed` in release-lib.sh): for a command that compiles dependency code
+# in a job that holds credentials it does not need.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+
+scrub=
+if [[ ${1:-} == --scrub ]]; then
+    scrub=1
+    shift
+    # shellcheck source=scripts/release-lib.sh
+    source scripts/release-lib.sh
+fi
 
 if [[ -n ${RELEASE_VERSION:-} ]]; then
     backup=$(mktemp -d)
@@ -23,4 +34,8 @@ if [[ -n ${RELEASE_VERSION:-} ]]; then
     # Cargo.lock; dependency versions stay exactly as locked.
     cargo update --workspace --offline --quiet
 fi
-"$@"
+if [[ -n $scrub ]]; then
+    scrubbed "$@"
+else
+    "$@"
+fi
