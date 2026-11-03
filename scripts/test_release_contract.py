@@ -241,5 +241,56 @@ class StampedRelease(unittest.TestCase):
         self.assertEqual([c["args"] for c in self.calls()], [["package"]])
 
 
+class CredentialIsolation(unittest.TestCase):
+    """Dependency code (cargo's verify build) runs without CI credentials; publishing never verifies."""
+
+    def test_build_packages_under_the_scrubbed_environment(self) -> None:
+        result = make("-n", "build", RELEASE_VERSION="1.2.3")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "scripts/release-stamped.sh --scrub cargo package --locked", result.stdout
+        )
+
+    def test_scrub_drops_credentials_and_keeps_the_rest(self) -> None:
+        secrets = {
+            "GITHUB_TOKEN": "a",
+            "ACTIONS_RUNTIME_TOKEN": "b",
+            "ACTIONS_ID_TOKEN_REQUEST_URL": "c",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "d",
+            "CARGO_REGISTRY_TOKEN": "e",
+            "NPM_TOKEN": "f",
+            "OCI_REGISTRY_PASSWORD": "g",
+            "OCI_REGISTRY_USERNAME": "h",
+            "CARGO_REGISTRIES_PRIVATE_TOKEN": "i",
+        }
+        env = {k: v for k, v in os.environ.items() if k != "RELEASE_VERSION"}
+        env.update(
+            secrets,
+            KEEP_ME="yes",
+            CARGO_HOME="/x/cargo",
+            CARGO_REGISTRIES_PRIVATE_INDEX="sparse+https://x/",
+        )
+        result = subprocess.run(  # noqa: S603
+            [str(ROOT / "scripts" / "release-stamped.sh"), "--scrub", "env"],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=ROOT,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        for name in secrets:
+            self.assertFalse(any(line.startswith(f"{name}=") for line in lines), name)
+        self.assertIn("KEEP_ME=yes", lines)
+        self.assertIn("CARGO_HOME=/x/cargo", lines)
+        self.assertIn("CARGO_REGISTRIES_PRIVATE_INDEX=sparse+https://x/", lines)
+
+    def test_publish_never_verifies_and_hides_the_oidc_request_variables(self) -> None:
+        text = (ROOT / "scripts" / "release-publish.sh").read_text()
+        self.assertIn("--locked --allow-dirty --no-verify", text)
+        self.assertIn("env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN", text)
+
+
 if __name__ == "__main__":
     unittest.main()

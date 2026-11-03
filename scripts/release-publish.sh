@@ -10,7 +10,9 @@
 # https://crates.io), CRATES_INDEX_URL (sparse index, default
 # https://index.crates.io), CRATE / CARGO_PACKAGE (see crate_info.py),
 # RELEASE_DRY_RUN (non-empty: print the chosen path and every step; the only
-# network call is the read-only index lookup, and nothing is published).
+# network call is the read-only index lookup, and nothing is published),
+# RELEASE_REPACKAGE_STRICT (non-empty: fail, not warn, when the re-packaged
+# crate differs from dist/'s; see publish()).
 #
 # Idempotent: a version already in the sparse index with the same checksum as
 # dist/<crate>-<version>.crate is skipped, so re-running a failed release job
@@ -31,6 +33,8 @@ endpoint="$url/api/v1/trusted_publishing/tokens"
 dry=${RELEASE_DRY_RUN:-}
 
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/release-lib.sh
+source scripts/release-lib.sh
 name=$(python3 -I scripts/crate_info.py name)
 version=$(python3 -I scripts/crate_info.py version)
 package_args=()
@@ -68,15 +72,62 @@ case $status in
         ;;
 esac
 
+# cargo publish cannot upload a prebuilt .crate (the Cargo Book: it always
+# packages the working tree itself), so it re-packages the tree this job
+# checked out and stamped, and that is what is uploaded. Two things keep that
+# safe:
+#  - --no-verify: cargo's verify step builds the unpacked crate, which runs
+#    dependency build.rs scripts and proc-macros, and this step holds the
+#    registry token or the OIDC request variables. The crate was verify-built
+#    without credentials in `make build` (release-stamped.sh --scrub), so nothing
+#    here compiles dependency code.
+#  - the re-package is compared with dist/<crate>-<version>.crate (the file
+#    that was verify-built, tested, SBOM'd and attached to the release); see
+#    check_repackage.
+# The OIDC request variables are removed for cargo itself, which has no use for
+# them.
 publish() {
     # CARGO_REGISTRY_TOKEN is read by cargo from the environment, so the
     # token never appears on a command line. --allow-dirty: release-stamped.sh
     # has edited Cargo.toml and Cargo.lock.
+    local args=(--locked --allow-dirty --no-verify ${package_args[@]+"${package_args[@]}"})
     if [[ -n $dry ]]; then
-        echo "[dry run] would: cargo publish --locked --allow-dirty ${package_args[*]+"${package_args[*]}"}"
+        echo "[dry run] would: cargo publish ${args[*]}"
     else
-        cargo publish --locked --allow-dirty ${package_args[@]+"${package_args[@]}"}
+        check_repackage
+        env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+            cargo publish "${args[@]}"
     fi
+}
+
+# Packages the tree again (no build, no credentials) and compares
+# the result with dist/'s .crate. A difference means the upload would not be
+# the artifact that was checked, so it is reported loudly. It is a warning, not
+# a failure, until a real release has shown the two are byte-identical in CI
+# (cargo's output is meant to be deterministic, but nothing here has exercised
+# it yet); set RELEASE_REPACKAGE_STRICT=1 to make it fail.
+check_repackage() {
+    local built="dist/$name-$version.crate" again sum_built sum_again
+    if [[ ! -f $built ]]; then
+        echo "publish: $built is missing; cannot compare the re-packaged crate with the verified one" >&2
+        return 0
+    fi
+    scrubbed cargo package --locked --allow-dirty --no-verify \
+        ${package_args[@]+"${package_args[@]}"} >/dev/null
+    again="$(python3 -I scripts/crate_info.py target-dir)/package/$name-$version.crate"
+    if [[ ! -f $again ]]; then
+        echo "publish: the re-packaged crate is not at $again; cannot compare it with $built" >&2
+        [[ -z ${RELEASE_REPACKAGE_STRICT:-} ]] || exit 1
+        return 0
+    fi
+    sum_built=$(sha256sum "$built" | cut -d' ' -f1)
+    sum_again=$(sha256sum "$again" | cut -d' ' -f1)
+    if [[ $sum_built == "$sum_again" ]]; then
+        echo "publish: the re-packaged crate is identical to $built ($sum_built)"
+        return 0
+    fi
+    echo "::warning title=re-packaged crate differs::cargo publish re-packages the tree; its crate ($sum_again) differs from the verified $built ($sum_built)."
+    [[ -z ${RELEASE_REPACKAGE_STRICT:-} ]] || exit 1
 }
 
 if [[ -n ${CARGO_REGISTRY_TOKEN:-} ]]; then

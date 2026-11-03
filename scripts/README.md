@@ -7,14 +7,19 @@
   copying its shape into a second script. Prefer the hook below over
   either. Every download goes through its `fetch` helper (bounded curl
   retries with backoff; GitHub URLs authenticated when the optional
-  `github_token` BuildKit secret is present) and the installers
-  that download for themselves run through `retry` (the installer script
-  itself is fetched once, by `fetch`, so the two layers of retries do not
-  multiply; a failed download names the installer and URL before the script
-  aborts, an empty one is rejected, and `fetch` itself retries DNS and
+  `github_token` BuildKit secret is present) and the one tool that
+  downloads for itself (`uv python install`) runs through `retry` (never
+  around a `fetch`, so the two layers of retries do not multiply; a failed
+  download names what failed and the URL before the script aborts, and
+  `fetch` itself retries DNS and
   connect failures (curl exit 6/7) and truncated transfers (18/52/55/56) up
   to 4 times; timeouts are left to curl's own `--retry`), so CI's shared-IP
   HTTP 429s don't fail the image build. Local builds need no token.
+  No vendor install script is run: `uv` and `prek` are release tarballs
+  checked against the `.sha256` published beside them (`fetch_checked`),
+  and Claude Code's binary is checked against its GPG-signed
+  `manifest.json` (key fingerprint pinned in `claude_signing_fpr`); see
+  `../docs/TEMPLATE.md`'s "Supply chain and release hardening".
 - `post-create.sh` — the devcontainer's `postCreateCommand`: git
   `safe.directory`, `prek install`, then every `post-create.d/*.sh`.
 - `crate_info.py` (+ `test_crate_info.py`, run by a hook; `test_release_contract.py` covers the Makefile's `publish` / `publish-packages` split and the `verify-published` probe's isolation) — the one place that
@@ -33,7 +38,9 @@
   `[patch]`, source replacement and rustflags cannot apply) with the
   channel read from `rust-toolchain.toml` and passed as `RUSTUP_TOOLCHAIN`;
   `release-lib.sh` holds the `probe` helper both use; `release-publish.sh` (`make
-  publish-packages`) runs `cargo publish` with a bootstrap token or crates.io trusted publishing,
+  publish-packages`) runs `cargo publish --no-verify` (nothing builds dependency code while it holds
+  credentials) with a bootstrap token or crates.io trusted publishing, after comparing the re-packaged crate with `dist/`'s;
+  `release-stamped.sh --scrub` runs its command without the CI credentials in its environment (`make build`'s `cargo package`),
   `release-stamped.sh` runs a command with `RELEASE_VERSION` stamped into
   `Cargo.toml`/`Cargo.lock` (restored afterwards) using
   `release-stamp-version.py`. It runs `cargo fetch --locked` first, because
@@ -51,6 +58,9 @@
   ARG in `../.devcontainer/Dockerfile`) and checksum-verified where the upstream project
   publishes checksums, matching the pattern each install step here already
   follows.
+- Run anything that compiles dependency code (`cargo package`'s verify, `cargo build`)
+  without registry or OIDC credentials in its environment; publish with
+  `--no-verify`.
 
 ## Don't
 

@@ -22,8 +22,9 @@ VERSION = $(eval VERSION := $$(shell RELEASE_VERSION='$$(RELEASE_VERSION)' $(CRA
 ASSET = dist/$(CRATE)-$(VERSION)
 REQUIRE_CRATE = $(if $(and $(CRATE),$(VERSION)),,$(error scripts/crate_info.py could not determine the crate name and version (see its message above); set CRATE/CARGO_PACKAGE))
 
+# Pinned by tag and digest; Renovate bumps both (.github/renovate.json).
 # renovate: datasource=docker depName=anchore/syft
-SYFT_VERSION := v1.52.0
+SYFT_IMAGE := anchore/syft:v1.52.0@sha256:500e2d872ac019436926e8322b4fc1f39441d94d21f6f4046c6ff29b30e8cb02
 
 release-arches:
 	@echo '["amd64"]'
@@ -32,12 +33,16 @@ release-arches:
 # release version is stamped into Cargo.toml/Cargo.lock only for the duration
 # (release-stamped.sh), so the checkout stays clean. The runner's rustup
 # honours rust-toolchain.toml, installing the pinned toolchain first.
+# Verifying builds dependency build.rs scripts and proc-macros, so it runs
+# under `release-stamped.sh --scrub`: release.yml's build job holds GITHUB_TOKEN
+# (contents/packages: write) and the Actions runtime token, which dependency
+# code must not see.
 build:
 	$(REQUIRE_CRATE)
 	@if command -v rustup >/dev/null 2>&1; then rustup toolchain install --profile minimal --no-self-update; fi
 	rm -rf dist
 	mkdir -p dist
-	scripts/release-stamped.sh cargo package --locked --allow-dirty $(if $(CARGO_PACKAGE),-p $(CARGO_PACKAGE))
+	scripts/release-stamped.sh --scrub cargo package --locked --allow-dirty $(if $(CARGO_PACKAGE),-p $(CARGO_PACKAGE))
 	@set -e; target=$$($(CRATE_INFO) target-dir); \
 	cp "$$target/package/$(CRATE)-$(VERSION).crate" "$(ASSET).crate"
 
@@ -49,7 +54,7 @@ sbom:
 	mkdir -p dist/.sbom-src
 	tar -xzf $(ASSET).crate -C dist/.sbom-src --strip-components=1
 	docker run --rm -u "$$(id -u):$$(id -g)" --tmpfs /tmp:rw,mode=1777 -e HOME=/tmp -v "$(CURDIR)/dist:/dist" \
-		anchore/syft:$(SYFT_VERSION) "dir:/dist/.sbom-src" \
+		$(SYFT_IMAGE) "dir:/dist/.sbom-src" \
 		--source-name $(CRATE) --source-version $(VERSION) -o "spdx-json=/$(ASSET).spdx.json"
 	rm -rf dist/.sbom-src
 
@@ -69,7 +74,8 @@ publish:
 # dist/ (the build leg's .crate), with the runner's own rustup/cargo, so the
 # pinned toolchain is installed first, as in `build`. Credentials and the
 # dry-run switch: scripts/release-publish.sh, which checks dist/'s .crate
-# against the index and then runs `cargo publish`.
+# against the index and then runs `cargo publish --no-verify` (the crate was
+# verify-built, credential-free, in `build`; no dependency code runs here).
 publish-packages:
 ifeq ($(CARGO_PUBLISH),)
 	@echo "::warning::CARGO_PUBLISH is not set -- the crate was NOT published to crates.io."

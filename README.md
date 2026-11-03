@@ -172,11 +172,19 @@ short-lived bootstrap token, and trusted publishing takes over after it:
    the token and publishes with it.
 3. On crates.io, open the crate's Settings, Trusted Publishing, and add a
    GitHub publisher: the owner, the repository, the workflow `release.yml`,
-   and no environment.
-4. Delete the `CARGO_REGISTRY_TOKEN` secret and revoke the token. From the
-   next release, `make publish-packages` finds no token and exchanges the job's
-   GitHub OIDC identity for a 30-minute crates.io token, publishes with it
-   and revokes it.
+   and the environment `release`. The environment field is the binding
+   control: it limits trusted publishing to jobs that declare
+   `environment: release`, which template-base's `release.yml` does for its
+   privileged jobs (with a deployment-branch rule allowing only the default
+   branch).
+4. Delete the `CARGO_REGISTRY_TOKEN` secret and revoke the token. A present
+   token is preferred over OIDC (`make publish-packages` publishes with it and
+   never tries trusted publishing), so the token must be gone for OIDC to
+   engage; if it is an organization secret, restrict its repository access so
+   this repository no longer sees it. From the next release,
+   `make publish-packages` finds no token and exchanges the job's GitHub OIDC
+   identity for a 30-minute crates.io token, publishes with it and revokes
+   it.
 
 ## License
 
