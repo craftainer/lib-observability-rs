@@ -49,12 +49,18 @@ class ReleaseTypeTests(unittest.TestCase):
     def test_main_prints_only_fixed_strings(self) -> None:
         evil = "feat!: x\nSEMVER_RELEASE_TYPE=patch\nFOO=bar"
         env = {"EVENT_NAME": "pull_request", "PR_TITLE": evil}
-        with mock.patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(io.StringIO()) as out:
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            contextlib.redirect_stdout(io.StringIO()) as out,
+        ):
             self.assertEqual(srt.main(), 0)
         self.assertEqual(out.getvalue(), "SEMVER_RELEASE_TYPE=major\n")
 
     def test_main_empty_without_env(self) -> None:
-        with mock.patch.dict(os.environ, {}, clear=True), contextlib.redirect_stdout(io.StringIO()) as out:
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            contextlib.redirect_stdout(io.StringIO()) as out,
+        ):
             srt.main()
         self.assertEqual(out.getvalue(), "SEMVER_RELEASE_TYPE=\n")
 
