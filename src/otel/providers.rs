@@ -193,10 +193,9 @@ mod tests {
     }
 
     fn failing<T>() -> Result<T, ExporterBuildError> {
-        Err(ExporterBuildError::InvalidConfig {
-            name: "endpoint".to_string(),
-            reason: "rejected for the test".to_string(),
-        })
+        Err(ExporterBuildError::InvalidConfiguration(
+            "rejected for the test".to_string(),
+        ))
     }
 
     #[test]
