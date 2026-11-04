@@ -315,10 +315,9 @@ mod tests {
     /// A build failure that does not depend on which crate features are
     /// compiled in (unlike, say, requesting gzip).
     fn failing_exporter() -> Result<LogExporter, ExporterBuildError> {
-        Err(ExporterBuildError::InvalidConfig {
-            name: "endpoint".to_string(),
-            reason: "rejected for the test".to_string(),
-        })
+        Err(ExporterBuildError::InvalidConfiguration(
+            "rejected for the test".to_string(),
+        ))
     }
 
     #[test]
