@@ -236,7 +236,7 @@ mod tests {
         }
     }
 
-    fn counting(calls: &Arc<AtomicUsize>, delay: Duration) -> Box<StubCheck> {
+    fn counting(calls: &Arc<AtomicUsize>, delay: Duration) -> Box<dyn HealthCheck> {
         Box::new(StubCheck {
             name: "db",
             healthy: true,
@@ -249,8 +249,7 @@ mod tests {
     #[tokio::test]
     async fn the_ready_run_is_cached_for_the_ttl() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let mut registry =
-            HealthRegistry::new().with_ready_cache_ttl(Duration::from_millis(100));
+        let mut registry = HealthRegistry::new().with_ready_cache_ttl(Duration::from_millis(100));
         registry.register(counting(&calls, Duration::ZERO)).unwrap();
         let first = registry.run_all_cached().await;
         let second = registry.run_all_cached().await;

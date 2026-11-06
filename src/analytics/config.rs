@@ -138,7 +138,11 @@ impl AnalyticsConfig {
     pub fn from_lookup(lookup: &dyn Fn(&str) -> Option<String>) -> Result<Self, Error> {
         let text = |name: &str| lookup(name).unwrap_or_default().trim().to_owned();
         Ok(Self {
-            enabled: flag("ANALYTICS_ENABLED", lookup("ANALYTICS_ENABLED").as_deref(), true)?,
+            enabled: flag(
+                "ANALYTICS_ENABLED",
+                lookup("ANALYTICS_ENABLED").as_deref(),
+                true,
+            )?,
             backend: choice(
                 "ANALYTICS_BACKEND",
                 lookup("ANALYTICS_BACKEND").as_deref(),

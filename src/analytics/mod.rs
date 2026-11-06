@@ -109,6 +109,17 @@ fn config_or_off(config: Result<AnalyticsConfig, crate::Error>) -> AnalyticsConf
     })
 }
 
+/// Flush and discard the process-wide client (blocking; see
+/// [`AnalyticsClient::shutdown`]). Rust has no `atexit`: call it before the
+/// process exits or the last queued events are lost. The next [`track`]
+/// reads the environment again.
+pub fn shutdown() {
+    let client = CLIENT.lock().unwrap_or_else(PoisonError::into_inner).take();
+    if let Some(client) = client {
+        client.shutdown();
+    }
+}
+
 #[cfg(test)]
 mod config_tests {
     use super::*;
@@ -120,16 +131,5 @@ mod config_tests {
         });
         assert!(!config_or_off(bad).enabled);
         assert!(config_or_off(Ok(AnalyticsConfig::default())).enabled);
-    }
-}
-
-/// Flush and discard the process-wide client (blocking; see
-/// [`AnalyticsClient::shutdown`]). Rust has no `atexit`: call it before the
-/// process exits or the last queued events are lost. The next [`track`]
-/// reads the environment again.
-pub fn shutdown() {
-    let client = CLIENT.lock().unwrap_or_else(PoisonError::into_inner).take();
-    if let Some(client) = client {
-        client.shutdown();
     }
 }

@@ -6,9 +6,9 @@ use std::time::SystemTime;
 
 use crate::Error;
 use crate::redact_keys::{REDACTED, is_secret_key, redact_text};
+use opentelemetry::Key;
 use opentelemetry::logs::{AnyValue, LogRecord as _, Logger as _, LoggerProvider as _, Severity};
 use opentelemetry::trace::TraceContextExt as _;
-use opentelemetry::Key;
 use opentelemetry_otlp::{ExporterBuildError, LogExporter};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::{BatchLogProcessor, SdkLogger, SdkLoggerProvider};
@@ -121,7 +121,8 @@ impl Visit for Redacted {
     }
 
     fn record_u64(&mut self, field: &Field, value: u64) {
-        let any = i64::try_from(value).map_or_else(|_| AnyValue::from(value.to_string()), AnyValue::Int);
+        let any =
+            i64::try_from(value).map_or_else(|_| AnyValue::from(value.to_string()), AnyValue::Int);
         self.scalar(field, any, value.to_string());
     }
 
@@ -196,7 +197,11 @@ where
         let otel = ctx
             .event_span(event)
             .map(|span| span.id())
-            .zip(self.dispatch.get().and_then(tracing::dispatcher::WeakDispatch::upgrade))
+            .zip(
+                self.dispatch
+                    .get()
+                    .and_then(tracing::dispatcher::WeakDispatch::upgrade),
+            )
             .and_then(|(id, dispatch)| tracing_opentelemetry::get_otel_context(&id, &dispatch));
         if let Some(context) = otel {
             let span = context.span();
@@ -497,9 +502,7 @@ mod tests {
     }
 
     /// Emits through the redacting bridge into memory and returns the records.
-    fn emitted(
-        body: impl FnOnce(),
-    ) -> Vec<opentelemetry_sdk::logs::SdkLogRecord> {
+    fn emitted(body: impl FnOnce()) -> Vec<opentelemetry_sdk::logs::SdkLogRecord> {
         use opentelemetry_sdk::logs::{InMemoryLogExporter, SimpleLogProcessor};
         let memory = InMemoryLogExporter::default();
         let provider = SdkLoggerProvider::builder()
@@ -522,8 +525,8 @@ mod tests {
             .map(|(_, value)| value.clone())
     }
 
-    fn text(value: &str) -> Option<AnyValue> {
-        Some(AnyValue::String(value.to_owned().into()))
+    fn text(value: &str) -> AnyValue {
+        AnyValue::String(value.to_owned().into())
     }
 
     #[test]
@@ -549,16 +552,19 @@ mod tests {
             record.body(),
             Some(&AnyValue::String("login password=[REDACTED]".into()))
         );
-        assert_eq!(attribute(record, "api_key"), text("[REDACTED]"));
-        assert_eq!(attribute(record, "session_id"), text("[REDACTED]"));
-        assert_eq!(attribute(record, "note"), text("retry token=[REDACTED] now"));
+        assert_eq!(attribute(record, "api_key"), Some(text("[REDACTED]")));
+        assert_eq!(attribute(record, "session_id"), Some(text("[REDACTED]")));
+        assert_eq!(
+            attribute(record, "note"),
+            Some(text("retry token=[REDACTED] now"))
+        );
         assert_eq!(
             attribute(record, "error"),
-            text("connect failed: postgres://[REDACTED]@db/x refused")
+            Some(text("connect failed: postgres://[REDACTED]@db/x refused"))
         );
         assert_eq!(attribute(record, "attempts"), Some(AnyValue::Int(3)));
         assert_eq!(attribute(record, "small"), Some(AnyValue::Int(5)));
-        assert_eq!(attribute(record, "big"), text(&u64::MAX.to_string()));
+        assert_eq!(attribute(record, "big"), Some(text(&u64::MAX.to_string())));
         assert_eq!(attribute(record, "ratio"), Some(AnyValue::Double(0.5)));
         assert_eq!(attribute(record, "flag"), Some(AnyValue::Boolean(true)));
         assert_eq!(record.severity_number(), Some(Severity::Warn));
@@ -573,17 +579,22 @@ mod tests {
             tracing::info!("i");
             tracing::error!("e");
         });
-        assert_eq!(
-            records[0].body(),
-            Some(&AnyValue::String("5".into()))
-        );
-        let levels: Vec<_> = records.iter().filter_map(|r| r.severity_number()).collect();
+        assert_eq!(records[0].body(), Some(&AnyValue::String("5".into())));
+        let levels: Vec<_> = records.iter().filter_map(opentelemetry_sdk::logs::SdkLogRecord::severity_number).collect();
         assert_eq!(
             levels,
-            [Severity::Trace, Severity::Debug, Severity::Info, Severity::Error]
+            [
+                Severity::Trace,
+                Severity::Debug,
+                Severity::Info,
+                Severity::Error
+            ]
         );
         let secret_message = emitted(|| tracing::info!(message = 5_i64, token = 1_i64));
-        assert_eq!(attribute(&secret_message[0], "token"), text("[REDACTED]"));
+        assert_eq!(
+            attribute(&secret_message[0], "token"),
+            Some(text("[REDACTED]"))
+        );
     }
 
     #[test]
