@@ -96,7 +96,14 @@ impl<E: SpanExporter> SpanExporter for RedactingSpanExporter<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opentelemetry::trace::{Link, Span as _, SpanContext, Tracer as _, TracerProvider as _};
+    use opentelemetry::trace::{
+        Link, Span as _, SpanContext, SpanId, TraceFlags, TraceId, TraceState, Tracer as _,
+        TracerProvider as _,
+    };
+
+    fn panics(_: &mut SpanData) {
+        panic!("scrubber bug");
+    }
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 
     #[test]
@@ -106,8 +113,15 @@ mod tests {
             .with_simple_exporter(RedactingSpanExporter(memory.clone()))
             .build();
         let tracer = provider.tracer("test");
+        let linked = SpanContext::new(
+            TraceId::from(1_u128),
+            SpanId::from(1_u64),
+            TraceFlags::SAMPLED,
+            false,
+            TraceState::default(),
+        );
         let link = Link::new(
-            SpanContext::empty_context(),
+            linked,
             vec![KeyValue::new("token", "t")],
             0,
         );
@@ -161,15 +175,12 @@ mod tests {
             "[REDACTED]"
         );
         // A scrubber that panics leaves nothing readable behind.
-        fn panics(_: &mut SpanData) {
-            panic!("scrubber bug");
-        }
         let mut stripped = span.clone();
         scrub_or_strip(&mut stripped, panics);
         assert_eq!(stripped.name, "[REDACTED]");
-        assert!(stripped.attributes.is_empty());
-        assert!(stripped.events.events.is_empty());
-        assert!(stripped.links.links.is_empty());
+        assert_eq!(stripped.attributes.len(), 0);
+        assert_eq!(stripped.events.events.len(), 0);
+        assert_eq!(stripped.links.links.len(), 0);
         assert_eq!(
             span.status,
             Status::error("db down: postgres://[REDACTED]@db/x")

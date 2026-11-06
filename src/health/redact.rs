@@ -240,9 +240,7 @@ fn auth_parameters_end(bytes: &[u8], from: usize) -> Option<usize> {
             value
                 + bytes[value..]
                     .iter()
-                    .take_while(|b| {
-                        !b.is_ascii_whitespace() && !matches!(**b, b',' | b'\'' | b'"')
-                    })
+                    .take_while(|b| !b.is_ascii_whitespace() && !matches!(**b, b',' | b'\'' | b'"'))
                     .count()
         });
         if bytes.get(k) == Some(&b',') {
@@ -550,14 +548,17 @@ mod tests {
             r#"{\"password\": [REDACTED], \"user\": \"bob\"}"#
         );
         assert_eq!(
-            redact(r#"{\'token\': \'abc\'}"#),
-            r#"{\'token\': [REDACTED]}"#
+            redact(r"{\'token\': \'abc\'}"),
+            r"{\'token\': [REDACTED]}"
         );
         assert_eq!(
             redact(r#"{\"authorization\": \"Bearer abc\"}"#),
             r#"{\"authorization\": [REDACTED]}"#
         );
-        assert_eq!(redact(r#"\"password\": \"abc"#), r#"\"password\": [REDACTED]"#);
+        assert_eq!(
+            redact(r#"\"password\": \"abc"#),
+            r#"\"password\": [REDACTED]"#
+        );
         assert_eq!(redact(r"password=\x done"), "password=[REDACTED] done");
     }
 
@@ -573,7 +574,10 @@ mod tests {
         let long = format!("password{}=x", "a".repeat(200));
         assert_eq!(redact(&long), long);
         let near = format!("password{}=x", "a".repeat(100));
-        assert_eq!(redact(&near), format!("password{}=[REDACTED]", "a".repeat(100)));
+        assert_eq!(
+            redact(&near),
+            format!("password{}=[REDACTED]", "a".repeat(100))
+        );
     }
 
     #[test]
@@ -587,7 +591,14 @@ mod tests {
     fn jwt_shapes() {
         let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.";
         assert_eq!(redact(&format!("a {jwt} b")), "a [REDACTED] b");
-        for text in ["ey", "eyJ.a.b", "eyJa..c", "eyJabc.def", "xeyJa.b.c", "e_eyJa.b.c"] {
+        for text in [
+            "ey",
+            "eyJ.a.b",
+            "eyJa..c",
+            "eyJabc.def",
+            "xeyJa.b.c",
+            "e_eyJa.b.c",
+        ] {
             assert_eq!(redact(text), text, "{text}");
         }
     }
