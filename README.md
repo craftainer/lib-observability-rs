@@ -107,7 +107,7 @@ Feature `analytics`, [ADR 0007](docs/adrs/0007-add-vendor-neutral-analytics-feat
 | `ANALYTICS_GEO` | `none` (default) or `coarse`; no effect (events carry `ip=server`) |
 | `ANALYTICS_PROP_KEYS` | comma-separated allowlist of property keys; empty by default |
 
-An unset or empty variable takes its default; **an unknown `ANALYTICS_ENABLED`, `_RESPECT_GPC`, `_CONSENT` or `_GEO` is a startup error** (`Error::InvalidConfig`, fail closed: `ANALYTICS_CONSENT=optin` must not quietly become `implied`). `AnalyticsConfig::from_env()` / `from_lookup()` return `Result<AnalyticsConfig, Error>`, so call `from_env()?` at startup. The lazy read inside `analytics::track` (no `init`) cannot return an error: it logs it at error level and turns analytics off. An Umami endpoint with embedded credentials is refused and a plain `http` one to a non-loopback host logs a warning. Names match
+An unset or empty variable takes its default; **an unknown `ANALYTICS_ENABLED`, `_RESPECT_GPC`, `_BACKEND`, `_CONSENT` or `_GEO` is a startup error** (`Error::InvalidConfig`, fail closed: `ANALYTICS_CONSENT=optin` must not quietly become `implied`). `AnalyticsConfig::from_env()` / `from_lookup()` return `Result<AnalyticsConfig, Error>`, so call `from_env()?` at startup. The lazy read inside `analytics::track` (no `init`) cannot return an error: it logs it at error level and turns analytics off. An Umami endpoint with embedded credentials is refused and a plain `http` one to a non-loopback host logs a warning. Names match
 `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$` (at most 50 characters) or the event is
 dropped; properties are scalars on the allowlist (strings cut to 200
 characters); `url` is reduced to its path.
@@ -155,8 +155,10 @@ export and the OTLP span export (ADR 0008). On the OTLP side the message,
 string values, span and event names, a span's error status and an error's whole
 `source()` chain are also scrubbed for `key=value` pairs and `scheme://user:pw@`
 userinfo, an `Authorization`-style `Bearer`/`Basic` scheme before a value,
-a bare `Bearer x` and a bare JWT, as the health checks' logged errors are.
-On spans, `http.url`, `url.full`, `http.target` and `url.path` lose their
+`Proxy-Authorization` with any scheme and `Digest` parameters, `key=value`
+pairs inside escaped JSON, a bare `Bearer x` and a bare JWT, as the health checks' logged errors are.
+`token` is matched as a substring on purpose, so counters like `input_tokens`
+are redacted too (no allowlist). On spans, `http.url`, `url.full`, `http.target` and `url.path` lose their
 query and fragment and `url.query` is dropped. A credential in free text of
 another shape is not caught: keep secrets out of messages.
 
@@ -177,7 +179,7 @@ Breaking for a minor release (0.x):
 
 - `AnalyticsConfig::from_env()` and `from_lookup()` return
   `Result<AnalyticsConfig, Error>`; an unknown `ANALYTICS_ENABLED`,
-  `_RESPECT_GPC`, `_CONSENT` or `_GEO` is `Error::InvalidConfig` (an unknown `_BACKEND` stays a warning that turns the backend off)
+  `_RESPECT_GPC`, `_BACKEND`, `_CONSENT` or `_GEO` is `Error::InvalidConfig`
   (new variant of the non-exhaustive `Error`).
 - `Error::InvalidConfig`, `RequestContext::from_headers`,
   `HealthRegistry::{with_ready_cache_ttl, run_all_cached}` are new.

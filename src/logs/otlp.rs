@@ -178,8 +178,15 @@ where
 
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
         let metadata = event.metadata();
-        let mut fields = Redacted::default();
-        event.record(&mut fields);
+        // A panic while rendering a field (a `Debug` impl) must not unwind
+        // into the caller's `tracing` macro: the record is dropped instead.
+        let Ok(fields) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut fields = Redacted::default();
+            event.record(&mut fields);
+            fields
+        })) else {
+            return;
+        };
         let mut record = self.logger.create_log_record();
         record.set_target(metadata.target());
         record.set_event_name(metadata.name());
@@ -572,6 +579,22 @@ mod tests {
     }
 
     #[test]
+    fn a_field_that_panics_drops_the_record_and_nothing_else() {
+        struct Boom;
+        impl std::fmt::Debug for Boom {
+            fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                panic!("a Debug impl that panics")
+            }
+        }
+        let records = emitted(|| {
+            tracing::info!(field = ?Boom, "lost");
+            tracing::info!("kept");
+        });
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].body(), Some(&AnyValue::String("kept".into())));
+    }
+
+    #[test]
     fn a_non_string_message_and_every_level_are_recorded() {
         let records = emitted(|| {
             tracing::trace!(message = 5_i64);
@@ -580,7 +603,10 @@ mod tests {
             tracing::error!("e");
         });
         assert_eq!(records[0].body(), Some(&AnyValue::String("5".into())));
-        let levels: Vec<_> = records.iter().filter_map(opentelemetry_sdk::logs::SdkLogRecord::severity_number).collect();
+        let levels: Vec<_> = records
+            .iter()
+            .filter_map(opentelemetry_sdk::logs::SdkLogRecord::severity_number)
+            .collect();
         assert_eq!(
             levels,
             [

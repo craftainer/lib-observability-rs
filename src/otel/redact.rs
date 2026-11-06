@@ -45,12 +45,27 @@ fn redact_attributes(attributes: &mut Vec<KeyValue>) {
     }
 }
 
+/// Runs `scrub` on `span`; if it panics, the span is exported stripped of its
+/// name, attributes, events and links rather than raw (a redaction bug must
+/// not leak a credential or take the export thread down).
+fn scrub_or_strip(span: &mut SpanData, scrub: fn(&mut SpanData)) {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scrub(span))).is_err() {
+        span.name = REDACTED.into();
+        span.attributes.clear();
+        span.events.events.clear();
+        span.links.links.clear();
+    }
+}
+
 fn redact_span(span: &mut SpanData) {
     span.name = redact_text(&span.name).into();
     redact_attributes(&mut span.attributes);
     for event in &mut span.events.events {
         event.name = redact_text(&event.name).into();
         redact_attributes(&mut event.attributes);
+    }
+    for link in &mut span.links.links {
+        redact_attributes(&mut link.attributes);
     }
     if let Status::Error { description } = &mut span.status {
         *description = redact_text(description).into();
@@ -59,7 +74,9 @@ fn redact_span(span: &mut SpanData) {
 
 impl<E: SpanExporter> SpanExporter for RedactingSpanExporter<E> {
     fn export(&self, mut batch: Vec<SpanData>) -> impl Future<Output = OTelSdkResult> + Send {
-        batch.iter_mut().for_each(redact_span);
+        for span in &mut batch {
+            scrub_or_strip(span, redact_span);
+        }
         self.0.export(batch)
     }
 
@@ -79,7 +96,7 @@ impl<E: SpanExporter> SpanExporter for RedactingSpanExporter<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opentelemetry::trace::{Span as _, Tracer as _, TracerProvider as _};
+    use opentelemetry::trace::{Link, Span as _, SpanContext, Tracer as _, TracerProvider as _};
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 
     #[test]
@@ -89,13 +106,25 @@ mod tests {
             .with_simple_exporter(RedactingSpanExporter(memory.clone()))
             .build();
         let tracer = provider.tracer("test");
-        let mut span = tracer.start("login password=name1");
+        let link = Link::new(
+            SpanContext::empty_context(),
+            vec![KeyValue::new("token", "t")],
+            0,
+        );
+        let mut span = tracer.build(
+            tracer
+                .span_builder("login password=name1")
+                .with_links(vec![link]),
+        );
         span.set_attribute(KeyValue::new("password", "hunter2"));
         span.set_attribute(KeyValue::new("api_key", 7_i64));
         span.set_attribute(KeyValue::new("note", "retry token=abc now"));
         span.set_attribute(KeyValue::new("attempts", 3_i64));
         span.set_attribute(KeyValue::new("http.target", "/x?token=abc"));
-        span.set_attribute(KeyValue::new("url.full", "https://h.example/x?token=abc#frag"));
+        span.set_attribute(KeyValue::new(
+            "url.full",
+            "https://h.example/x?token=abc#frag",
+        ));
         span.set_attribute(KeyValue::new("url.path", "/x#frag"));
         span.set_attribute(KeyValue::new("http.url", "http://h.example/x?token=abc"));
         span.set_attribute(KeyValue::new("url.query", "token=abc"));
@@ -127,6 +156,20 @@ mod tests {
         let event = &span.events.events[0];
         assert_eq!(event.name, "sent cookie=[REDACTED]");
         assert_eq!(event.attributes[0].value.to_string(), "[REDACTED]");
+        assert_eq!(
+            span.links.links[0].attributes[0].value.to_string(),
+            "[REDACTED]"
+        );
+        // A scrubber that panics leaves nothing readable behind.
+        fn panics(_: &mut SpanData) {
+            panic!("scrubber bug");
+        }
+        let mut stripped = span.clone();
+        scrub_or_strip(&mut stripped, panics);
+        assert_eq!(stripped.name, "[REDACTED]");
+        assert!(stripped.attributes.is_empty());
+        assert!(stripped.events.events.is_empty());
+        assert!(stripped.links.links.is_empty());
         assert_eq!(
             span.status,
             Status::error("db down: postgres://[REDACTED]@db/x")
