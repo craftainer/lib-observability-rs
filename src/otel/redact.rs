@@ -21,13 +21,26 @@ use crate::redact_keys::{REDACTED, is_secret_key, redact_text};
 #[derive(Debug)]
 pub(crate) struct RedactingSpanExporter<E>(pub(crate) E);
 
-/// `attributes` with secret values replaced and string values scrubbed.
-fn redact_attributes(attributes: &mut [KeyValue]) {
-    for attribute in attributes {
-        if is_secret_key(attribute.key.as_str()) {
+/// Attributes that hold a URL or path: their query and fragment can carry
+/// tokens, so only the path is kept.
+const URL_KEYS: [&str; 4] = ["http.url", "url.full", "http.target", "url.path"];
+
+/// `attributes` with secret values replaced, string values scrubbed, the
+/// query and fragment cut from URL attributes and `url.query` dropped.
+fn redact_attributes(attributes: &mut Vec<KeyValue>) {
+    attributes.retain(|attribute| attribute.key.as_str() != "url.query");
+    for attribute in attributes.iter_mut() {
+        let key = attribute.key.as_str();
+        if is_secret_key(key) {
             attribute.value = Value::from(REDACTED);
         } else if let Value::String(text) = &attribute.value {
-            attribute.value = Value::from(redact_text(text.as_str()));
+            let text = text.as_str();
+            let text = if URL_KEYS.contains(&key) {
+                text.split(['?', '#']).next().unwrap_or_default()
+            } else {
+                text
+            };
+            attribute.value = Value::from(redact_text(text));
         }
     }
 }
@@ -81,6 +94,11 @@ mod tests {
         span.set_attribute(KeyValue::new("api_key", 7_i64));
         span.set_attribute(KeyValue::new("note", "retry token=abc now"));
         span.set_attribute(KeyValue::new("attempts", 3_i64));
+        span.set_attribute(KeyValue::new("http.target", "/x?token=abc"));
+        span.set_attribute(KeyValue::new("url.full", "https://h.example/x?token=abc#frag"));
+        span.set_attribute(KeyValue::new("url.path", "/x#frag"));
+        span.set_attribute(KeyValue::new("http.url", "http://h.example/x?token=abc"));
+        span.set_attribute(KeyValue::new("url.query", "token=abc"));
         span.add_event(
             "sent cookie=sid1",
             vec![KeyValue::new("Authorization", "Bearer x")],
@@ -101,6 +119,11 @@ mod tests {
         assert_eq!(get("api_key").as_deref(), Some("[REDACTED]"));
         assert_eq!(get("note").as_deref(), Some("retry token=[REDACTED] now"));
         assert_eq!(get("attempts").as_deref(), Some("3"));
+        assert_eq!(get("http.target").as_deref(), Some("/x"));
+        assert_eq!(get("url.full").as_deref(), Some("https://h.example/x"));
+        assert_eq!(get("url.path").as_deref(), Some("/x"));
+        assert_eq!(get("http.url").as_deref(), Some("http://h.example/x"));
+        assert_eq!(get("url.query"), None);
         let event = &span.events.events[0];
         assert_eq!(event.name, "sent cookie=[REDACTED]");
         assert_eq!(event.attributes[0].value.to_string(), "[REDACTED]");

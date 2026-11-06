@@ -149,7 +149,12 @@ impl AnalyticsConfig {
                     ("otel", Backend::Otel),
                 ],
                 Backend::None,
-            )?,
+            )
+            .unwrap_or_else(|err| {
+                // Fails safe on its own (no events leave), so a typo is a warning.
+                tracing::warn!("{err}; analytics backend is none");
+                Backend::None
+            }),
             endpoint: text("ANALYTICS_ENDPOINT").trim_end_matches('/').to_owned(),
             site_id: text("ANALYTICS_SITE_ID"),
             hostname: text("ANALYTICS_HOSTNAME"),
@@ -246,6 +251,11 @@ mod tests {
     }
 
     #[test]
+    fn an_unknown_backend_falls_back_to_none() {
+        assert_eq!(of(&[("ANALYTICS_BACKEND", "plausible")]).backend, Backend::None);
+    }
+
+    #[test]
     fn unknown_values_are_a_startup_error_naming_the_variable() {
         for (name, value) in [
             ("ANALYTICS_CONSENT", "optin"),
@@ -253,7 +263,6 @@ mod tests {
             ("ANALYTICS_ENABLED", "disabled"),
             ("ANALYTICS_ENABLED", "n"),
             ("ANALYTICS_RESPECT_GPC", "nope"),
-            ("ANALYTICS_BACKEND", "plausible"),
             ("ANALYTICS_GEO", "fine"),
         ] {
             let err = try_of(&[(name, value)]).unwrap_err();

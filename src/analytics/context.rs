@@ -60,8 +60,8 @@ impl Drop for ContextGuard {
 impl RequestContext {
     /// The context a request's headers describe: `gpc` when `Sec-GPC: 1` or
     /// `DNT: 1` was sent (any of repeated headers), `consent` when
-    /// `Analytics-Consent: 1` was sent. Any other value, or a header that
-    /// is not UTF-8, counts as not sent.
+    /// `Analytics-Consent: 1` was sent (names are case-insensitive). Any other
+    /// value, or a header that is not UTF-8, counts as not sent.
     ///
     /// `Analytics-Consent` is a claim any client can make: trust it only when
     /// the BFF in front of the service strips the client's header and sets
@@ -69,7 +69,7 @@ impl RequestContext {
     /// without the BFF must not read it from the wire.
     #[must_use]
     pub fn from_headers(headers: &HeaderMap) -> Self {
-        let one = |value: &axum::http::HeaderValue| value.to_str().is_ok_and(|v| v.trim() == "1");
+        let one = |value: &axum::http::HeaderValue| value.to_str().is_ok_and(|v| v == "1");
         let sent = |name: &str| headers.get_all(name).iter().any(one);
         Self {
             gpc: sent("sec-gpc") || sent("dnt"),
@@ -129,7 +129,9 @@ mod tests {
         let ctx = |gpc, consent| RequestContext { gpc, consent };
         assert_eq!(of(&[]), ctx(false, false));
         assert_eq!(of(&[("sec-gpc", "1")]), ctx(true, false));
-        assert_eq!(of(&[("dnt", " 1 ")]), ctx(true, false));
+        assert_eq!(of(&[("DNT", "1")]), ctx(true, false));
+        assert_eq!(of(&[("dnt", " 1 ")]), ctx(false, false));
+        assert_eq!(of(&[("dnt", "10")]), ctx(false, false));
         assert_eq!(of(&[("sec-gpc", "0"), ("dnt", "0")]), ctx(false, false));
         assert_eq!(of(&[("sec-gpc", "0"), ("sec-gpc", "1")]), ctx(true, false));
         assert_eq!(of(&[("analytics-consent", "1")]), ctx(false, true));

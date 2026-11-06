@@ -29,9 +29,9 @@ pub(crate) const SECRET_KEY_PARTS: [&str; 18] = [
     "signature",
 ];
 
-/// Whether the value under `key` must not be exported.
+/// Whether the value under `key` must not be exported (`-` counts as `_`).
 pub(crate) fn is_secret_key(key: &str) -> bool {
-    let lowered = key.to_ascii_lowercase();
+    let lowered = key.to_ascii_lowercase().replace('-', "_");
     SECRET_KEY_PARTS.iter().any(|part| lowered.contains(part))
 }
 
@@ -73,6 +73,9 @@ mod tests {
             "passwd",
             "apikey",
             "api_token",
+            "X-Api-Key",
+            "access-key",
+            "Set-Cookie",
         ] {
             assert!(is_secret_key(key), "{key}");
         }

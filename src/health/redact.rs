@@ -46,7 +46,14 @@ fn redact_pairs(text: &str) -> String {
     let mut copied = 0;
     let mut i = 0;
     while i < bytes.len() {
-        match secret_value_span(bytes, i) {
+        // Cheap pre-check: every key and token this looks for starts with one
+        // of a few letters, so most positions cost one comparison.
+        let found = if could_start(bytes[i]) {
+            secret_value_span(bytes, i).or_else(|| bare_span(bytes, i))
+        } else {
+            None
+        };
+        match found {
             Some((value_start, value_end)) => {
                 out.push_str(&text[copied..value_start]);
                 out.push_str(REDACTED);
@@ -60,14 +67,94 @@ fn redact_pairs(text: &str) -> String {
     out
 }
 
+/// Whether a secret key, `Bearer` or a JWT (`eyJ`) can start with `byte`.
+fn could_start(byte: u8) -> bool {
+    matches!(
+        byte.to_ascii_lowercase(),
+        b't' | b'p' | b's' | b'a' | b'c' | b'j' | b'b' | b'd' | b'e'
+    )
+}
+
 /// If a secret key starts at `i`, the byte span of its value.
 fn secret_value_span(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
-    SECRET_KEY_PARTS.iter().find_map(|key| {
-        let candidate = bytes.get(i..i + key.len())?;
-        candidate
-            .eq_ignore_ascii_case(key.as_bytes())
-            .then(|| value_span_after(bytes, i + key.len()))
-            .flatten()
+    SECRET_KEY_PARTS
+        .iter()
+        .find_map(|key| value_span_after(bytes, key_match_end(bytes, i, key)?))
+}
+
+/// Where `key` ends if it is written at `i`: case-insensitive, and each `_`
+/// of the key may be written `_`, `-` or nothing (`api_key`, `api-key`,
+/// `apikey`).
+fn key_match_end(bytes: &[u8], i: usize, key: &str) -> Option<usize> {
+    let mut j = i;
+    for expected in key.bytes() {
+        if expected == b'_' {
+            j += usize::from(matches!(bytes.get(j), Some(b'_' | b'-')));
+        } else if bytes.get(j)?.eq_ignore_ascii_case(&expected) {
+            j += 1;
+        } else {
+            return None;
+        }
+    }
+    Some(j)
+}
+
+/// A value that is not preceded by a key: `Bearer abc` (the token is the
+/// span) or a JWT (`eyJ...`, the whole token).
+fn bare_span(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
+    if i > 0 && bytes[i - 1].is_ascii_alphanumeric() {
+        return None;
+    }
+    bare_bearer(bytes, i).or_else(|| bare_jwt(bytes, i))
+}
+
+fn is_token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'~' | b'+' | b'/' | b'=' | b'-')
+}
+
+fn bare_bearer(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
+    let word = bytes.get(i..i + 6)?;
+    if !word.eq_ignore_ascii_case(b"bearer") {
+        return None;
+    }
+    let spaces = bytes[i + 6..].iter().take_while(|b| **b == b' ').count();
+    let start = i + 6 + spaces;
+    let len = bytes[start..].iter().take_while(|b| is_token_byte(**b)).count();
+    (spaces > 0 && len > 0).then_some((start, start + len))
+}
+
+fn bare_jwt(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
+    if bytes.get(i..i + 3)? != b"eyJ" {
+        return None;
+    }
+    let segment = |from: usize| {
+        bytes[from..]
+            .iter()
+            .take_while(|b| b.is_ascii_alphanumeric() || matches!(**b, b'_' | b'-'))
+            .count()
+    };
+    let mut end = i + segment(i);
+    for _ in 0..2 {
+        if bytes.get(end) != Some(&b'.') {
+            return None;
+        }
+        end += 1 + segment(end + 1);
+    }
+    Some((i, end))
+}
+
+/// If a `Bearer ` or `Basic ` scheme starts at `at`, where the credential
+/// after it starts.
+fn after_scheme(bytes: &[u8], at: usize) -> Option<usize> {
+    ["bearer", "basic"].iter().find_map(|scheme| {
+        let word = bytes.get(at..at + scheme.len())?;
+        let spaces = bytes[at + scheme.len()..]
+            .iter()
+            .take_while(|b| **b == b' ')
+            .count();
+        let next = at + scheme.len() + spaces;
+        (word.eq_ignore_ascii_case(scheme.as_bytes()) && spaces > 0 && next < bytes.len())
+            .then_some(next)
     })
 }
 
@@ -87,11 +174,13 @@ fn value_span_after(bytes: &[u8], key_end: usize) -> Option<(usize, usize)> {
     j += 1;
     j += bytes[j..].iter().take_while(|b| **b == b' ').count();
     let start = j;
-    let end = match bytes.get(j) {
-        Some(quote @ (b'\'' | b'"')) => closing_quote(bytes, j + 1, *quote),
+    // An authorization scheme belongs to the value: `Bearer abc` is all secret.
+    let credential = after_scheme(bytes, j).unwrap_or(j);
+    let end = match bytes.get(credential) {
+        Some(quote @ (b'\'' | b'"')) => closing_quote(bytes, credential + 1, *quote),
         _ => {
-            start
-                + bytes[start..]
+            credential
+                + bytes[credential..]
                     .iter()
                     .take_while(|b| !b.is_ascii_whitespace() && !matches!(**b, b'\'' | b'"'))
                     .count()
@@ -184,6 +273,41 @@ mod tests {
             redact("cookie: sid=1 session_id=9 dsn=x jwt=a.b.c bearer=zz"),
             "cookie: [REDACTED] session_id=[REDACTED] dsn=[REDACTED] jwt=[REDACTED] bearer=[REDACTED]"
         );
+    }
+
+    #[test]
+    fn keys_may_be_written_with_dashes_or_nothing() {
+        assert_eq!(
+            redact("api-key=a apikey=b API_KEY=c access-key=d accesskey=e x-api-key: f"),
+            "api-key=[REDACTED] apikey=[REDACTED] API_KEY=[REDACTED] access-key=[REDACTED] accesskey=[REDACTED] x-api-key: [REDACTED]"
+        );
+    }
+
+    #[test]
+    fn a_scheme_before_the_value_is_part_of_it() {
+        assert_eq!(
+            redact("Authorization: Bearer abc.def next"),
+            "Authorization: [REDACTED] next"
+        );
+        assert_eq!(
+            redact(r#"authorization="Basic dXNlcjpw\"x" end"#),
+            "authorization=[REDACTED] end"
+        );
+        assert_eq!(redact("token: bearer"), "token: [REDACTED]");
+    }
+
+    #[test]
+    fn bare_bearer_values_and_jwts_are_redacted() {
+        assert_eq!(redact("sent Bearer x1.y_2 ok"), "sent Bearer [REDACTED] ok");
+        assert_eq!(redact("a bearer of news"), "a bearer [REDACTED] news");
+        assert_eq!(redact("Bearer"), "Bearer");
+        assert_eq!(redact("Bearer  "), "Bearer  ");
+        assert_eq!(redact("notbearer x"), "notbearer x");
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln";
+        assert_eq!(redact(&format!("got {jwt} end")), "got [REDACTED] end");
+        assert_eq!(redact("eyJabc.def"), "eyJabc.def");
+        assert_eq!(redact("eyJabc"), "eyJabc");
+        assert_eq!(redact("eyJa.b.c"), "[REDACTED]");
     }
 
     #[test]
