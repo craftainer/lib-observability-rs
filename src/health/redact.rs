@@ -6,22 +6,7 @@
 //! credentials from that text before it is logged. It is a safety net, not a
 //! parser: it over-redacts rather than leak.
 
-const REDACTED: &str = "[REDACTED]";
-
-/// Keys whose value is redacted when written `key=value` or `key: value`
-/// (matched case-insensitively, also as the tail of a longer key such as
-/// `db_password`). A key that another key is a prefix of comes first.
-const SECRET_KEYS: [&str; 9] = [
-    "secret_key",
-    "secret",
-    "password",
-    "passwd",
-    "pwd",
-    "token",
-    "api_key",
-    "apikey",
-    "access_key",
-];
+use crate::redact_keys::{REDACTED, SECRET_KEY_PARTS};
 
 /// `text` with URL userinfo (`user:pass@`) and secret key/value pairs
 /// replaced by `[REDACTED]`.
@@ -77,12 +62,24 @@ fn redact_pairs(text: &str) -> String {
 
 /// If a secret key starts at `i`, the byte span of its value.
 fn secret_value_span(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
-    let key = SECRET_KEYS.iter().find(|key| {
-        bytes
-            .get(i..i + key.len())
-            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(key.as_bytes()))
-    })?;
-    let mut j = i + key.len();
+    SECRET_KEY_PARTS.iter().find_map(|key| {
+        let candidate = bytes.get(i..i + key.len())?;
+        candidate
+            .eq_ignore_ascii_case(key.as_bytes())
+            .then(|| value_span_after(bytes, i + key.len()))
+            .flatten()
+    })
+}
+
+/// The byte span of the value of a secret key that ends at `key_end`, if a
+/// `=` or `:` follows.
+fn value_span_after(bytes: &[u8], key_end: usize) -> Option<(usize, usize)> {
+    // The rest of a longer key name (`secret_key`, `session_id`).
+    let mut j = key_end
+        + bytes[key_end..]
+            .iter()
+            .take_while(|b| b.is_ascii_alphanumeric() || matches!(**b, b'_' | b'-' | b'.'))
+            .count();
     j += bytes[j..].iter().take_while(|b| **b == b' ').count();
     if !matches!(bytes.get(j), Some(b'=' | b':')) {
         return None;
@@ -178,6 +175,14 @@ mod tests {
         assert_eq!(
             redact("api_key=abc apikey:def"),
             "api_key=[REDACTED] apikey:[REDACTED]"
+        );
+    }
+
+    #[test]
+    fn the_shared_key_list_applies_to_text() {
+        assert_eq!(
+            redact("cookie: sid=1 session_id=9 dsn=x jwt=a.b.c bearer=zz"),
+            "cookie: [REDACTED] session_id=[REDACTED] dsn=[REDACTED] jwt=[REDACTED] bearer=[REDACTED]"
         );
     }
 

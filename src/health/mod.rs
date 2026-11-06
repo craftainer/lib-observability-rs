@@ -17,15 +17,16 @@
 pub mod checks;
 pub mod info;
 #[cfg(any(
+    feature = "otel",
     feature = "postgres",
     feature = "redis",
     feature = "s3",
     feature = "http"
 ))]
-mod redact;
+pub(crate) mod redact;
 pub mod router;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 
@@ -33,6 +34,9 @@ use crate::Error;
 
 /// The timeout a check gets when neither it nor the registry sets one.
 pub const DEFAULT_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long `/ready` reuses the last result ([`HealthRegistry::run_all_cached`]).
+pub const DEFAULT_READY_CACHE_TTL: Duration = Duration::from_secs(1);
 
 /// The fixed, client-safe note for a check that exceeded its timeout.
 const TIMEOUT_DETAIL: &str = "health check timed out";
@@ -75,6 +79,14 @@ pub trait HealthCheck: Send + Sync {
 pub struct HealthRegistry {
     checks: Vec<Box<dyn HealthCheck>>,
     default_timeout: Duration,
+    ready_cache_ttl: Duration,
+    cache: tokio::sync::Mutex<Option<CachedRun>>,
+}
+
+/// The last full run and when it finished.
+struct CachedRun {
+    finished: Instant,
+    results: Vec<(String, HealthCheckResult)>,
 }
 
 impl Default for HealthRegistry {
@@ -82,6 +94,8 @@ impl Default for HealthRegistry {
         Self {
             checks: Vec::new(),
             default_timeout: DEFAULT_CHECK_TIMEOUT,
+            ready_cache_ttl: DEFAULT_READY_CACHE_TTL,
+            cache: tokio::sync::Mutex::new(None),
         }
     }
 }
@@ -97,6 +111,14 @@ impl HealthRegistry {
     #[must_use]
     pub fn with_default_timeout(mut self, timeout: Duration) -> Self {
         self.default_timeout = timeout;
+        self
+    }
+
+    /// Sets how long [`run_all_cached`](Self::run_all_cached) (what `/ready`
+    /// serves) reuses a finished run; zero turns the cache off.
+    #[must_use]
+    pub fn with_ready_cache_ttl(mut self, ttl: Duration) -> Self {
+        self.ready_cache_ttl = ttl;
         self
     }
 
@@ -118,6 +140,30 @@ impl HealthRegistry {
         }
         self.checks.push(check);
         Ok(())
+    }
+
+    /// [`run_all`](Self::run_all) behind a short-lived cache: a run that
+    /// finished less than the TTL ago ([`DEFAULT_READY_CACHE_TTL`], 1 second)
+    /// is returned as it is, and callers that arrive while a run is in
+    /// flight wait for it instead of starting their own. An anonymous client
+    /// polling `/ready` therefore costs the dependencies at most one probe
+    /// per check per TTL, however fast it loops.
+    pub async fn run_all_cached(&self) -> Vec<(String, HealthCheckResult)> {
+        if self.ready_cache_ttl.is_zero() {
+            return self.run_all().await;
+        }
+        let mut cache = self.cache.lock().await;
+        if let Some(run) = cache.as_ref()
+            && run.finished.elapsed() < self.ready_cache_ttl
+        {
+            return run.results.clone();
+        }
+        let results = self.run_all().await;
+        *cache = Some(CachedRun {
+            finished: Instant::now(),
+            results: results.clone(),
+        });
+        results
     }
 
     /// Runs every check concurrently and returns `(name, result)` in
@@ -188,6 +234,53 @@ mod tests {
                 },
             }
         }
+    }
+
+    fn counting(calls: &Arc<AtomicUsize>, delay: Duration) -> Box<StubCheck> {
+        Box::new(StubCheck {
+            name: "db",
+            healthy: true,
+            delay,
+            calls: calls.clone(),
+            timeout: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn the_ready_run_is_cached_for_the_ttl() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut registry =
+            HealthRegistry::new().with_ready_cache_ttl(Duration::from_millis(100));
+        registry.register(counting(&calls, Duration::ZERO)).unwrap();
+        let first = registry.run_all_cached().await;
+        let second = registry.run_all_cached().await;
+        assert_eq!(first, second);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        registry.run_all_cached().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn concurrent_ready_requests_share_one_run() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut registry = HealthRegistry::new().with_ready_cache_ttl(Duration::from_secs(30));
+        registry
+            .register(counting(&calls, Duration::from_millis(50)))
+            .unwrap();
+        let runs = futures::future::join_all((0..8).map(|_| registry.run_all_cached())).await;
+        assert!(runs.iter().all(|run| run == &runs[0]));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_zero_ttl_turns_the_cache_off() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut registry = HealthRegistry::new().with_ready_cache_ttl(Duration::ZERO);
+        registry.register(counting(&calls, Duration::ZERO)).unwrap();
+        registry.run_all_cached().await;
+        registry.run_all_cached().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

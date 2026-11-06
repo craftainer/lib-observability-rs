@@ -38,13 +38,14 @@ struct ReadyResponse {
     checks: BTreeMap<String, HealthCheckResult>,
 }
 
-/// Runs every registered check concurrently; 200 if all are healthy, 503
-/// otherwise.
+/// Runs every registered check concurrently (through the registry's short
+/// result cache, [`HealthRegistry::run_all_cached`]); 200 if all are
+/// healthy, 503 otherwise.
 async fn ready<S>(State(state): State<S>) -> impl IntoResponse
 where
     S: HasHealthRegistry,
 {
-    let results = state.health_registry().run_all().await;
+    let results = state.health_registry().run_all_cached().await;
     let healthy = results.iter().all(|(_, result)| result.healthy);
     let checks: BTreeMap<String, HealthCheckResult> = results.into_iter().collect();
     let status = if healthy {
@@ -60,6 +61,12 @@ where
 }
 
 /// The `/live` and `/ready` routes, for a host to `nest` under `/health`.
+///
+/// `/ready` is unauthenticated and probes every dependency, so mount it on an
+/// internal port (a second listener the orchestrator reaches, not the public
+/// one). The registry's result cache (1 second by default,
+/// [`HealthRegistry::with_ready_cache_ttl`]) bounds the probe load if it is
+/// exposed anyway.
 pub fn router<S>() -> Router<S>
 where
     S: HasHealthRegistry + Clone + Send + Sync + 'static,

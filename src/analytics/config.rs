@@ -3,6 +3,8 @@
 
 use std::collections::HashSet;
 
+use crate::Error;
+
 /// Where events go (`ANALYTICS_BACKEND`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Backend {
@@ -77,44 +79,66 @@ impl Default for AnalyticsConfig {
     }
 }
 
-fn flag(value: Option<&str>, default: bool) -> bool {
-    match value.map(|v| v.trim().to_ascii_lowercase()) {
-        Some(v) if !v.is_empty() => !matches!(v.as_str(), "0" | "false" | "no" | "off"),
-        _ => default,
+/// A boolean setting: `1|true|yes|on` or `0|false|no|off`, `default` when
+/// unset or empty, an error for anything else (never a silent default: a
+/// typo in a privacy switch must not leave tracking on).
+fn flag(name: &str, value: Option<&str>, default: bool) -> Result<bool, Error> {
+    let value = value.unwrap_or_default().trim().to_ascii_lowercase();
+    match value.as_str() {
+        "" => Ok(default),
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => Err(unknown(name, &value)),
     }
 }
 
-/// `value` looked up in `choices`, or `default` (with a warning when it is
-/// set but unknown).
-fn choice<T: Copy>(name: &str, value: Option<&str>, choices: &[(&str, T)], default: T) -> T {
+/// `value` looked up in `choices`, `default` when unset or empty, an error
+/// when it is set but unknown.
+fn choice<T: Copy>(
+    name: &str,
+    value: Option<&str>,
+    choices: &[(&str, T)],
+    default: T,
+) -> Result<T, Error> {
     let value = value.unwrap_or_default().trim().to_ascii_lowercase();
     if value.is_empty() {
-        return default;
+        return Ok(default);
     }
-    choices.iter().find(|(k, _)| *k == value).map_or_else(
-        || {
-            tracing::warn!("{name}={value:?} is not a known choice; using the default");
-            default
-        },
-        |(_, v)| *v,
-    )
+    choices
+        .iter()
+        .find(|(k, _)| *k == value)
+        .map(|(_, v)| *v)
+        .ok_or_else(|| unknown(name, &value))
+}
+
+fn unknown(name: &str, value: &str) -> Error {
+    Error::InvalidConfig(format!("{name}={value:?} is not a known value"))
 }
 
 impl AnalyticsConfig {
     /// Read the settings from the process environment.
-    #[must_use]
-    pub fn from_env() -> Self {
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidConfig`] when a setting has an unknown value; see
+    /// [`from_lookup`](Self::from_lookup).
+    pub fn from_env() -> Result<Self, Error> {
         Self::from_lookup(&|name| std::env::var(name).ok())
     }
 
     /// Read the settings through `lookup` (the testable core of
-    /// [`from_env`](Self::from_env)). An unknown choice logs a warning and
-    /// falls back to its default.
-    #[must_use]
-    pub fn from_lookup(lookup: &dyn Fn(&str) -> Option<String>) -> Self {
+    /// [`from_env`](Self::from_env)). Unset or empty means the default; a
+    /// value that is not one of the documented ones fails closed.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidConfig`] naming the variable (and its value) for an
+    /// unknown `ANALYTICS_ENABLED`, `_RESPECT_GPC`, `_BACKEND`, `_CONSENT` or
+    /// `_GEO`.
+    pub fn from_lookup(lookup: &dyn Fn(&str) -> Option<String>) -> Result<Self, Error> {
         let text = |name: &str| lookup(name).unwrap_or_default().trim().to_owned();
-        Self {
-            enabled: flag(lookup("ANALYTICS_ENABLED").as_deref(), true),
+        Ok(Self {
+            enabled: flag("ANALYTICS_ENABLED", lookup("ANALYTICS_ENABLED").as_deref(), true)?,
             backend: choice(
                 "ANALYTICS_BACKEND",
                 lookup("ANALYTICS_BACKEND").as_deref(),
@@ -125,7 +149,7 @@ impl AnalyticsConfig {
                     ("otel", Backend::Otel),
                 ],
                 Backend::None,
-            ),
+            )?,
             endpoint: text("ANALYTICS_ENDPOINT").trim_end_matches('/').to_owned(),
             site_id: text("ANALYTICS_SITE_ID"),
             hostname: text("ANALYTICS_HOSTNAME"),
@@ -134,21 +158,25 @@ impl AnalyticsConfig {
                 lookup("ANALYTICS_CONSENT").as_deref(),
                 &[("implied", Consent::Implied), ("opt-in", Consent::OptIn)],
                 Consent::Implied,
-            ),
-            respect_gpc: flag(lookup("ANALYTICS_RESPECT_GPC").as_deref(), true),
+            )?,
+            respect_gpc: flag(
+                "ANALYTICS_RESPECT_GPC",
+                lookup("ANALYTICS_RESPECT_GPC").as_deref(),
+                true,
+            )?,
             geo: choice(
                 "ANALYTICS_GEO",
                 lookup("ANALYTICS_GEO").as_deref(),
                 &[("none", Geo::None), ("coarse", Geo::Coarse)],
                 Geo::None,
-            ),
+            )?,
             prop_keys: text("ANALYTICS_PROP_KEYS")
                 .split(',')
                 .map(str::trim)
                 .filter(|k| !k.is_empty())
                 .map(str::to_owned)
                 .collect(),
-        }
+        })
     }
 }
 
@@ -157,6 +185,10 @@ mod tests {
     use super::*;
 
     fn of(pairs: &[(&str, &str)]) -> AnalyticsConfig {
+        try_of(pairs).unwrap()
+    }
+
+    fn try_of(pairs: &[(&str, &str)]) -> Result<AnalyticsConfig, Error> {
         let pairs: Vec<(String, String)> = pairs
             .iter()
             .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
@@ -172,7 +204,7 @@ mod tests {
     #[test]
     fn defaults() {
         assert_eq!(of(&[]), AnalyticsConfig::default());
-        assert_eq!(AnalyticsConfig::from_env().backend, Backend::None);
+        assert_eq!(AnalyticsConfig::from_env().unwrap().backend, Backend::None);
     }
 
     #[test]
@@ -203,16 +235,32 @@ mod tests {
     }
 
     #[test]
-    fn unknown_choices_fall_back_and_flags_parse() {
-        let c = of(&[
-            ("ANALYTICS_BACKEND", "plausible"),
-            ("ANALYTICS_CONSENT", "maybe"),
-            ("ANALYTICS_GEO", "fine"),
-            ("ANALYTICS_ENABLED", ""),
-            ("ANALYTICS_RESPECT_GPC", "yes"),
-        ]);
-        assert_eq!(c, AnalyticsConfig::default());
+    fn flags_parse() {
+        assert!(of(&[("ANALYTICS_ENABLED", "")]).enabled);
+        assert!(of(&[("ANALYTICS_ENABLED", " On ")]).enabled);
+        assert!(of(&[("ANALYTICS_ENABLED", "1")]).enabled);
+        assert!(of(&[("ANALYTICS_ENABLED", "true")]).enabled);
+        assert!(of(&[("ANALYTICS_RESPECT_GPC", "yes")]).respect_gpc);
         assert!(!of(&[("ANALYTICS_ENABLED", "0")]).enabled);
         assert!(!of(&[("ANALYTICS_ENABLED", "No")]).enabled);
+    }
+
+    #[test]
+    fn unknown_values_are_a_startup_error_naming_the_variable() {
+        for (name, value) in [
+            ("ANALYTICS_CONSENT", "optin"),
+            ("ANALYTICS_CONSENT", "maybe"),
+            ("ANALYTICS_ENABLED", "disabled"),
+            ("ANALYTICS_ENABLED", "n"),
+            ("ANALYTICS_RESPECT_GPC", "nope"),
+            ("ANALYTICS_BACKEND", "plausible"),
+            ("ANALYTICS_GEO", "fine"),
+        ] {
+            let err = try_of(&[(name, value)]).unwrap_err();
+            assert!(
+                matches!(&err, Error::InvalidConfig(m) if m.contains(name) && m.contains(value)),
+                "{name}={value}: {err}"
+            );
+        }
     }
 }

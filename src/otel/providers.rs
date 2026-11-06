@@ -16,6 +16,7 @@ use tracing_subscriber::Layer as _;
 use tracing_subscriber::filter::{FilterFn, Filtered};
 
 use super::SCOPE;
+use super::redact::RedactingSpanExporter;
 use crate::Error;
 use crate::logs::otlp::exportable;
 
@@ -59,7 +60,7 @@ pub(crate) fn tracer_provider(
     Ok(Some(
         SdkTracerProvider::builder()
             .with_resource(resource.clone())
-            .with_batch_exporter(exporter)
+            .with_batch_exporter(RedactingSpanExporter(exporter))
             .build(),
     ))
 }

@@ -85,9 +85,42 @@ pub fn track(name: &str, props: &[(&str, PropValue)], url: Option<&str>) {
     let client = CLIENT
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .get_or_insert_with(|| Arc::new(AnalyticsClient::new(AnalyticsConfig::from_env())))
+        .get_or_insert_with(|| Arc::new(AnalyticsClient::new(env_config())))
         .clone();
     client.track(name, props, url);
+}
+
+/// The environment's settings; an invalid one is logged at error level and
+/// turns analytics off (fail closed), since `track` cannot return an error.
+/// Call `AnalyticsConfig::from_env()` at startup and stop on its error.
+fn env_config() -> AnalyticsConfig {
+    config_or_off(AnalyticsConfig::from_env())
+}
+
+/// `config`, or an `enabled = false` one (with the error logged) when it
+/// failed to load.
+fn config_or_off(config: Result<AnalyticsConfig, crate::Error>) -> AnalyticsConfig {
+    config.unwrap_or_else(|err| {
+        tracing::error!("{err}; analytics is off");
+        AnalyticsConfig {
+            enabled: false,
+            ..AnalyticsConfig::default()
+        }
+    })
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn an_invalid_environment_turns_analytics_off() {
+        let bad = AnalyticsConfig::from_lookup(&|name| {
+            (name == "ANALYTICS_CONSENT").then(|| "optin".to_owned())
+        });
+        assert!(!config_or_off(bad).enabled);
+        assert!(config_or_off(Ok(AnalyticsConfig::default())).enabled);
+    }
 }
 
 /// Flush and discard the process-wide client (blocking; see

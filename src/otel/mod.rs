@@ -25,6 +25,7 @@
 #[cfg(feature = "postgres")]
 mod db;
 mod providers;
+pub(crate) mod redact;
 mod resource;
 mod server;
 
