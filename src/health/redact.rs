@@ -547,10 +547,7 @@ mod tests {
             redact(r#"{\"password\": \"x\", \"user\": \"bob\"}"#),
             r#"{\"password\": [REDACTED], \"user\": \"bob\"}"#
         );
-        assert_eq!(
-            redact(r"{\'token\': \'abc\'}"),
-            r"{\'token\': [REDACTED]}"
-        );
+        assert_eq!(redact(r"{\'token\': \'abc\'}"), r"{\'token\': [REDACTED]}");
         assert_eq!(
             redact(r#"{\"authorization\": \"Bearer abc\"}"#),
             r#"{\"authorization\": [REDACTED]}"#

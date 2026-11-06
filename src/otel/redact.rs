@@ -120,11 +120,7 @@ mod tests {
             false,
             TraceState::default(),
         );
-        let link = Link::new(
-            linked,
-            vec![KeyValue::new("token", "t")],
-            0,
-        );
+        let link = Link::new(linked, vec![KeyValue::new("token", "t")], 0);
         let mut span = tracer.build(
             tracer
                 .span_builder("login password=name1")
