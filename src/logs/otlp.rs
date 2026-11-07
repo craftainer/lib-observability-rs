@@ -582,7 +582,7 @@ mod tests {
         struct Boom;
         impl std::fmt::Debug for Boom {
             fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                panic!("a Debug impl that panics")
+                panic!("a Debug impl that panics");
             }
         }
         let records = emitted(|| {

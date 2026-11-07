@@ -144,7 +144,7 @@ repos:
         name: cargo llvm-cov (100% line-coverage gate)
         # Runs the unit and integration tiers; tests/ itself
         # is excluded from the measured lines by cargo-llvm-cov's defaults.
-        entry: cargo llvm-cov --workspace --all-features --locked --lcov --fail-under-lines 100
+        entry: cargo llvm-cov --workspace --all-features --locked --fail-under-lines 100
         language: system
         pass_filenames: false
         always_run: true
