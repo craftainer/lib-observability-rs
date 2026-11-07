@@ -8,7 +8,7 @@ use crate::Error;
 use crate::redact_keys::{REDACTED, is_secret_key, redact_text};
 use opentelemetry::Key;
 use opentelemetry::logs::{AnyValue, LogRecord as _, Logger as _, LoggerProvider as _, Severity};
-use opentelemetry::trace::TraceContextExt as _;
+use opentelemetry::trace::{SpanContext, TraceContextExt as _};
 use opentelemetry_otlp::{ExporterBuildError, LogExporter};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::{BatchLogProcessor, SdkLogger, SdkLoggerProvider};
@@ -210,16 +210,15 @@ where
                     .and_then(tracing::dispatcher::WeakDispatch::upgrade),
             )
             .and_then(|(id, dispatch)| tracing_opentelemetry::get_otel_context(&id, &dispatch));
-        if let Some(context) = otel {
-            let span = context.span();
-            let span_context = span.span_context();
-            if span_context.is_valid() {
-                record.set_trace_context(
-                    span_context.trace_id(),
-                    span_context.span_id(),
-                    Some(span_context.trace_flags()),
-                );
-            }
+        let valid = otel
+            .map(|context| context.span().span_context().clone())
+            .filter(SpanContext::is_valid);
+        if let Some(span_context) = valid {
+            record.set_trace_context(
+                span_context.trace_id(),
+                span_context.span_id(),
+                Some(span_context.trace_flags()),
+            );
         }
         self.logger.emit(record);
     }
@@ -616,6 +615,8 @@ mod tests {
                 Severity::Error
             ]
         );
+        let no_message = emitted(|| tracing::info!(only = 1_i64));
+        assert_eq!(no_message[0].body(), None);
         let secret_message = emitted(|| tracing::info!(message = 5_i64, token = 1_i64));
         assert_eq!(
             attribute(&secret_message[0], "token"),
