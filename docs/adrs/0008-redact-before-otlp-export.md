@@ -37,5 +37,5 @@ attached.
 The crate owns about 100 lines of bridge code that must follow the SDK's log
 record API. Redaction by key name and `key=value` shape over-redacts a field
 such as `session_id` on purpose; a secret in free text of another shape is not
-caught. Array-valued span attributes are not scrubbed. Metrics carry no
+caught. String-array span attributes are scrubbed item by item; the stdout JSON layer keeps redacting by field name only. Metrics carry no
 free-form fields and are not touched.

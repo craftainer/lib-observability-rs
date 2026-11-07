@@ -60,7 +60,8 @@ impl Drop for ContextGuard {
 impl RequestContext {
     /// The context a request's headers describe: `gpc` when `Sec-GPC: 1` or
     /// `DNT: 1` was sent (any of repeated headers), `consent` when
-    /// `Analytics-Consent: 1` was sent (names are case-insensitive). Any other
+    /// `Analytics-Consent: 1` was sent and no repeated copy says otherwise
+    /// (names are case-insensitive). Any other
     /// value, or a header that is not UTF-8, counts as not sent.
     ///
     /// `Analytics-Consent` is a claim any client can make: trust it only when
@@ -73,7 +74,11 @@ impl RequestContext {
         let sent = |name: &str| headers.get_all(name).iter().any(one);
         Self {
             gpc: sent("sec-gpc") || sent("dnt"),
-            consent: headers.get("analytics-consent").is_some_and(one),
+            // Repeated headers fail closed: every value must be "1".
+            consent: {
+                let mut values = headers.get_all("analytics-consent").iter().peekable();
+                values.peek().is_some() && values.all(one)
+            },
         }
     }
 
@@ -136,6 +141,18 @@ mod tests {
         assert_eq!(of(&[("sec-gpc", "0"), ("sec-gpc", "1")]), ctx(true, false));
         assert_eq!(of(&[("analytics-consent", "1")]), ctx(false, true));
         assert_eq!(of(&[("analytics-consent", "yes")]), ctx(false, false));
+        assert_eq!(
+            of(&[("analytics-consent", "1"), ("analytics-consent", "0")]),
+            ctx(false, false)
+        );
+        assert_eq!(
+            of(&[("analytics-consent", "0"), ("analytics-consent", "1")]),
+            ctx(false, false)
+        );
+        assert_eq!(
+            of(&[("analytics-consent", "1"), ("analytics-consent", "1")]),
+            ctx(false, true)
+        );
         let mut headers = HeaderMap::new();
         headers.insert(
             "sec-gpc",

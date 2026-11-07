@@ -681,7 +681,10 @@ mod tests {
             .build();
         let subscriber = tracing_subscriber::registry()
             .with(trace_layer(&tracer))
-            .with(RedactingBridge::new(&provider));
+            .with(
+                RedactingBridge::new(&provider)
+                    .with_filter(FilterFn::new(exportable as fn(&Metadata<'_>) -> bool)),
+            );
         tracing::subscriber::with_default(subscriber, || {
             tracing::info!("outside");
             tracing::info_span!("work").in_scope(|| tracing::info!("inside"));

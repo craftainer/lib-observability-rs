@@ -116,7 +116,7 @@ characters); `url` is reduced to its path.
 use craftainer_observability::analytics::{self, AnalyticsConfig, RequestContext};
 
 let telemetry = configure_telemetry()?;
-analytics::init(&AnalyticsConfig::from_env(), Some(&telemetry)); // optional
+analytics::init(&AnalyticsConfig::from_env()?, Some(&telemetry)); // optional
 // In a request, wrap the handler's future so GPC / opt-in are honoured:
 RequestContext::from_headers(request.headers())
     .scope(async { analytics::track("signup.done", &[("plan", "pro".into())], Some("/signup")) })
@@ -169,9 +169,13 @@ billable `ListBuckets`). **Mount it on an internal port**, a second listener
 the orchestrator's probes reach and the internet does not, and keep `/live`
 the only public health route if one is needed. As a second line of defence
 `HealthRegistry::run_all_cached` (what `/ready` serves) reuses a finished run
-for 1 second (`with_ready_cache_ttl`, zero turns it off) and lets concurrent
-requests wait for the run in flight, so a client looping on `/ready` costs
-each dependency at most one probe per second.
+for 1 second (`with_ready_cache_ttl`) and lets concurrent requests wait for
+the run in flight, so a client looping on `/ready` costs each dependency at
+most one probe per second. A zero TTL turns the cache and the waiting off:
+every request probes. The run is driven by the request that started it (the
+crate has no runtime handle to detach it), so if that request is dropped, for
+instance by a probe timeout shorter than a slow check, the next waiter starts
+a fresh run.
 
 ## Upgrading
 
@@ -181,7 +185,8 @@ Breaking for a minor release (0.x):
   `Result<AnalyticsConfig, Error>`; an unknown `ANALYTICS_ENABLED`,
   `_RESPECT_GPC`, `_BACKEND`, `_CONSENT` or `_GEO` is `Error::InvalidConfig`
   (new variant of the non-exhaustive `Error`).
-- `Error::InvalidConfig`, `RequestContext::from_headers`,
+- `Error::InvalidConfig`, `RequestContext::from_headers` (a repeated
+  `Analytics-Consent` header counts only when every copy is `1`),
   `HealthRegistry::{with_ready_cache_ttl, run_all_cached}` are new.
 - The `opentelemetry-appender-tracing` dependency is gone: the OTLP log layer
   is the crate's own (`/ready` and redaction behave as above).

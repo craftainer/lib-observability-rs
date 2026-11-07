@@ -10,7 +10,7 @@
 use std::time::Duration;
 
 use opentelemetry::trace::Status;
-use opentelemetry::{KeyValue, Value};
+use opentelemetry::{Array, KeyValue, Value};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::error::OTelSdkResult;
 use opentelemetry_sdk::trace::{SpanData, SpanExporter};
@@ -25,8 +25,9 @@ pub(crate) struct RedactingSpanExporter<E>(pub(crate) E);
 /// tokens, so only the path is kept.
 const URL_KEYS: [&str; 4] = ["http.url", "url.full", "http.target", "url.path"];
 
-/// `attributes` with secret values replaced, string values scrubbed, the
-/// query and fragment cut from URL attributes and `url.query` dropped.
+/// `attributes` with secret values replaced, string values (and string
+/// arrays) scrubbed, the query and fragment cut from URL attributes and
+/// `url.query` dropped.
 fn redact_attributes(attributes: &mut Vec<KeyValue>) {
     attributes.retain(|attribute| attribute.key.as_str() != "url.query");
     for attribute in attributes.iter_mut() {
@@ -34,13 +35,18 @@ fn redact_attributes(attributes: &mut Vec<KeyValue>) {
         if is_secret_key(key) {
             attribute.value = Value::from(REDACTED);
         } else if let Value::String(text) = &attribute.value {
-            let text = text.as_str();
-            let text = if URL_KEYS.contains(&key) {
-                text.split(['?', '#']).next().unwrap_or_default()
+            // Scrub first, then cut: a password may itself hold `?` or `#`.
+            let scrubbed = redact_text(text.as_str());
+            let kept = if URL_KEYS.contains(&key) {
+                scrubbed.split(['?', '#']).next().unwrap_or_default()
             } else {
-                text
+                scrubbed.as_str()
             };
-            attribute.value = Value::from(redact_text(text));
+            attribute.value = Value::from(kept.to_owned());
+        } else if let Value::Array(Array::String(items)) = &mut attribute.value {
+            for item in items.iter_mut() {
+                *item = redact_text(item.as_str()).into();
+            }
         }
     }
 }
@@ -54,6 +60,10 @@ fn scrub_or_strip(span: &mut SpanData, scrub: fn(&mut SpanData)) {
         span.attributes.clear();
         span.events.events.clear();
         span.links.links.clear();
+        // The error description can hold the same credential; keep the code.
+        if let Status::Error { description } = &mut span.status {
+            *description = "".into();
+        }
     }
 }
 
@@ -138,6 +148,13 @@ mod tests {
         span.set_attribute(KeyValue::new("url.path", "/x#frag"));
         span.set_attribute(KeyValue::new("http.url", "http://h.example/x?token=abc"));
         span.set_attribute(KeyValue::new("url.query", "token=abc"));
+        span.set_attribute(KeyValue::new(
+            "args",
+            Value::Array(Array::String(vec![
+                "--password=hunter2".into(),
+                "plain".into(),
+            ])),
+        ));
         span.add_event(
             "sent cookie=sid1",
             vec![KeyValue::new("Authorization", "Bearer x")],
@@ -163,6 +180,17 @@ mod tests {
         assert_eq!(get("url.path").as_deref(), Some("/x"));
         assert_eq!(get("http.url").as_deref(), Some("http://h.example/x"));
         assert_eq!(get("url.query"), None);
+        let args = span
+            .attributes
+            .iter()
+            .find(|kv| kv.key.as_str() == "args")
+            .unwrap();
+        assert!(
+            args.value.to_string().contains("--password=[REDACTED]")
+                && !args.value.to_string().contains("hunter2"),
+            "{}",
+            args.value
+        );
         let event = &span.events.events[0];
         assert_eq!(event.name, "sent cookie=[REDACTED]");
         assert_eq!(event.attributes[0].value.to_string(), "[REDACTED]");
@@ -177,11 +205,25 @@ mod tests {
         assert_eq!(stripped.attributes.len(), 0);
         assert_eq!(stripped.events.events.len(), 0);
         assert_eq!(stripped.links.links.len(), 0);
+        stripped.status = Status::error("db down: postgres://app:pw@db/x");
+        scrub_or_strip(&mut stripped, panics);
+        assert_eq!(stripped.status, Status::error(""));
         assert_eq!(
             span.status,
             Status::error("db down: postgres://[REDACTED]@db/x")
         );
         provider.shutdown().unwrap();
+    }
+
+    #[test]
+    fn userinfo_is_scrubbed_before_the_url_is_cut() {
+        let mut attributes = vec![KeyValue::new(
+            "url.full",
+            "https://svc:pa#ss@h.example/x?q=1",
+        )];
+        redact_attributes(&mut attributes);
+        let shown = attributes[0].value.to_string();
+        assert!(!shown.contains("svc:pa") && !shown.contains('?'), "{shown}");
     }
 
     #[test]

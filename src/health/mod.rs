@@ -148,6 +148,10 @@ impl HealthRegistry {
     /// flight wait for it instead of starting their own. An anonymous client
     /// polling `/ready` therefore costs the dependencies at most one probe
     /// per check per TTL, however fast it loops.
+    ///
+    /// A zero TTL disables both the cache and the waiting. The run belongs
+    /// to the caller that started it: if that caller is dropped, the next
+    /// waiter starts a fresh run.
     pub async fn run_all_cached(&self) -> Vec<(String, HealthCheckResult)> {
         if self.ready_cache_ttl.is_zero() {
             return self.run_all().await;
