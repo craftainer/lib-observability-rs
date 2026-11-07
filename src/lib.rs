@@ -57,6 +57,7 @@ pub mod health;
 pub mod logs;
 #[cfg(feature = "otel")]
 pub mod otel;
+pub(crate) mod redact_keys;
 pub mod request_id;
 
 pub use error::Error;

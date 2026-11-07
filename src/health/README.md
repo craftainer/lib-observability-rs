@@ -17,6 +17,8 @@ Health checks and the `/live` and `/ready` router.
   "commit"}` from `APP_VERSION`/`APP_COMMIT`, read per request, empty or unset
   is `null`); the host merges it next to `router()`. ADR 0006.
 
+`/ready` is served through `HealthRegistry::run_all_cached`: a 1 s result cache (`with_ready_cache_ttl`) with request coalescing, and it belongs on an internal port.
+
 `/live` never touches the registry, so a downstream outage cannot fail
 liveness. Each failing check catches its dependency's error and reports a
 fixed, non-leaking `detail`; the real error goes to `tracing::error!` only.

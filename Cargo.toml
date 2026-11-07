@@ -73,7 +73,6 @@ sqlx = { version = "0.9.0", optional = true, default-features = false, features 
 # its own plain thread, where the async client panics ("there is no reactor
 # running") and so exports nothing. "reqwest-rustls" makes https endpoints work.
 opentelemetry = { version = "0.32.0", optional = true, default-features = false, features = ["logs", "trace", "metrics"] }
-opentelemetry-appender-tracing = { version = "0.32.0", optional = true, default-features = false }
 opentelemetry-otlp = { version = "0.32.0", optional = true, default-features = false, features = ["logs", "trace", "metrics", "http-proto", "reqwest-blocking-client", "reqwest-rustls"] }
 opentelemetry_sdk = { version = "0.32.1", optional = true, default-features = false, features = ["logs", "trace", "metrics", "rt-tokio"] }
 # Bridges `tracing` spans to OpenTelemetry spans (0.33 pairs with opentelemetry 0.32).
@@ -112,7 +111,6 @@ testing = []
 # are set, and the `otel` module (server spans, request metrics) is built.
 otel = [
   "dep:opentelemetry",
-  "dep:opentelemetry-appender-tracing",
   "dep:opentelemetry-otlp",
   "dep:opentelemetry_sdk",
   "dep:tracing-opentelemetry",
