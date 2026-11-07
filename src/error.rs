@@ -26,6 +26,12 @@ pub enum Error {
     #[error("an OTLP exporter could not be built: {0}")]
     ExporterBuild(String),
 
+    /// A setting has a value this crate does not know. A misspelt privacy
+    /// setting (`ANALYTICS_CONSENT=optin`) must stop startup rather than
+    /// silently fall back to tracking, so unknown values fail closed.
+    #[error("invalid configuration: {0}")]
+    InvalidConfig(String),
+
     /// Flushing or shutting down the OTLP export failed (the message is the
     /// SDK's own).
     #[error("flushing the OTLP export failed: {0}")]
@@ -49,6 +55,10 @@ mod tests {
         assert_eq!(
             Error::ExporterBuild("bad".to_string()).to_string(),
             "an OTLP exporter could not be built: bad"
+        );
+        assert_eq!(
+            Error::InvalidConfig("X=y".to_string()).to_string(),
+            "invalid configuration: X=y"
         );
         assert_eq!(
             Error::Flush("late".to_string()).to_string(),

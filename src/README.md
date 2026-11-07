@@ -12,7 +12,7 @@ implements one accessor trait.
   `tracing` subscriber: JSON lines on stdout (`logs/json.rs`, the flat
   `lib-observability-py` layout with `trace_id`/`span_id`/`request_id` and
   credential redaction) and, with the `otel` feature, OTLP/HTTP export of
-  logs (`logs/otlp.rs`), traces and metrics when the standard
+  logs (`logs/otlp.rs`: its own redacting bridge, not `opentelemetry-appender-tracing`), traces and metrics when the standard
   `OTEL_EXPORTER_OTLP_*` endpoint variables are set. Returns a `Telemetry`
   that flushes every exporter. `configure_logging` is the deprecated old name.
 - `otel/` — feature `otel`: `resource.rs` (which signals the environment asks
@@ -22,6 +22,7 @@ implements one accessor trait.
 - `analytics/` — feature `analytics`: `track()`, the `ANALYTICS_*` adapters
   (none, log, otel, Umami) and the GPC-aware `RequestContext`
   (`analytics/README.md`, ADR 0007).
+- `redact_keys.rs` — the one credential key list and `redact_text`, used by the JSON layer, the OTLP log layer, the span exporter wrapper (`otel/redact.rs`) and the health checks' logged errors.
 - `error.rs` — `Error`, the crate's own error type.
 - `request_id.rs` — `RequestIdLayer`, a tower layer that validates or creates
   the `X-Request-ID` header, echoes it, stores a `RequestId` in the request's
