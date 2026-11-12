@@ -10,8 +10,9 @@
 //!   names, except `WARN` is `WARNING` as in Python's `logging`), `logger` (the
 //!   event's target) and `message` are always there.
 //! - Every other event field is a top-level key. A field whose name contains
-//!   `token`, `password`, `secret`, `authorization`, `claims` or `credential`
-//!   (any case) has its value replaced by `[REDACTED]`. A field named like one
+//!   one of the fragments of the crate's shared key list (`token`, `password`,
+//!   `secret`, `authorization`, `claims`, `credential`, `api_key`, `cookie`,
+//!   `session`, ...; any case) has its value replaced by `[REDACTED]`. A field named like one
 //!   of the keys of this list or below (`timestamp`, `level`, `logger`,
 //!   `trace_id`, `span_id`, `request_id`) is dropped: the line's own value wins.
 //! - `trace_id` and `span_id` (hex) are there when the event is inside a valid
@@ -33,18 +34,7 @@ use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
 
-/// Field-name fragments whose values are never logged (compared lowercase).
-const REDACTED_KEY_PARTS: [&str; 6] = [
-    "token",
-    "password",
-    "secret",
-    "authorization",
-    "claims",
-    "credential",
-];
-
-/// The placeholder that replaces a redacted value.
-const REDACTED: &str = "[REDACTED]";
+use crate::redact_keys::{REDACTED, is_secret_key};
 
 /// Keys the line sets itself; an event field of this name is dropped.
 const RESERVED_KEYS: [&str; 7] = [
@@ -99,12 +89,6 @@ fn level_name(level: tracing::Level) -> &'static str {
     }
 }
 
-/// Whether the value under `key` must not be logged.
-fn is_redacted(key: &str) -> bool {
-    let lowered = key.to_ascii_lowercase();
-    REDACTED_KEY_PARTS.iter().any(|part| lowered.contains(part))
-}
-
 /// Collects an event's fields in order: the message and the (redacted) rest.
 #[derive(Default)]
 struct Fields {
@@ -122,7 +106,7 @@ impl Fields {
                 other => other.to_string(),
             };
         } else if !RESERVED_KEYS.contains(&name) {
-            let value = if is_redacted(name) {
+            let value = if is_secret_key(name) {
                 Value::String(REDACTED.to_owned())
             } else {
                 value

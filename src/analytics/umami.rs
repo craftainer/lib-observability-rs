@@ -2,6 +2,8 @@
 //! a bounded queue drained by one background thread.
 
 use std::collections::VecDeque;
+use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -39,11 +41,21 @@ pub(crate) struct Settings {
 
 impl Settings {
     /// The settings for `endpoint` (a base URL), or `None` when it is not a
-    /// valid http(s) URL.
+    /// valid http(s) URL without embedded credentials (`https://user:pw@host`
+    /// would put them in every log line that names the URL). Plain `http` to
+    /// a host other than loopback is accepted with a warning: the site id and
+    /// events then cross the network in clear.
     pub(crate) fn new(endpoint: &str, site_id: &str, hostname: &str) -> Option<Self> {
         let url = format!("{}/api/batch", endpoint.trim_end_matches('/'));
-        let valid = reqwest::Url::parse(&url).is_ok_and(|u| matches!(u.scheme(), "http" | "https"));
-        valid.then(|| Self {
+        let parsed = reqwest::Url::parse(&url).ok().filter(|u| {
+            matches!(u.scheme(), "http" | "https")
+                && u.username().is_empty()
+                && u.password().is_none()
+        })?;
+        if parsed.scheme() == "http" && !is_loopback(parsed.host_str().unwrap_or_default()) {
+            tracing::warn!("ANALYTICS_ENDPOINT uses plain http to a non-loopback host; use https");
+        }
+        Some(Self {
             url,
             site_id: site_id.to_owned(),
             hostname: hostname.to_owned(),
@@ -53,6 +65,18 @@ impl Settings {
         })
     }
 }
+
+/// Whether `host` (as `Url::host_str` spells it) is `localhost` or a loopback
+/// address.
+pub(super) fn is_loopback(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_matches(['[', ']'])
+            .parse::<IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+static QUEUE_FULL_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Posts batches. Built on the flusher thread: the blocking client runs its
 /// own runtime and must not be created or dropped inside an async context.
@@ -185,8 +209,14 @@ impl Queue {
     pub(crate) fn push(&self, event: Event) {
         {
             let mut state = lock(&self.shared);
-            if state.stop || state.events.len() >= QUEUE_CAPACITY {
-                tracing::debug!("analytics queue full or stopped; event dropped");
+            if state.stop {
+                return;
+            }
+            if state.events.len() >= QUEUE_CAPACITY {
+                // Once per process: a dead endpoint would otherwise warn per event.
+                if !QUEUE_FULL_WARNED.swap(true, Ordering::Relaxed) {
+                    tracing::warn!("analytics queue full; events are being dropped");
+                }
                 return;
             }
             state.events.push_back(event);

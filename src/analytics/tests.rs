@@ -256,6 +256,8 @@ fn bad_umami_settings_fall_back_to_off() {
         ("http://x", ""),
         ("not a url", "site"),
         ("ftp://host", "site"),
+        ("https://user:pw@host", "site"),
+        ("https://user@host", "site"),
     ] {
         let client = AnalyticsClient::new(AnalyticsConfig {
             backend: Backend::Umami,
@@ -266,6 +268,24 @@ fn bad_umami_settings_fall_back_to_off() {
         assert!(matches!(client.sink_name(), "none"), "{endpoint}");
         client.track("page.view", &[], None);
     }
+}
+
+#[test]
+fn plain_http_to_a_remote_host_is_accepted_and_loopback_is_recognised() {
+    for endpoint in ["http://analytics.internal:3000", "http://localhost:3000"] {
+        let client = AnalyticsClient::new(AnalyticsConfig {
+            backend: Backend::Umami,
+            endpoint: endpoint.into(),
+            site_id: "site".into(),
+            ..AnalyticsConfig::default()
+        });
+        assert_eq!(client.sink_name(), "umami", "{endpoint}");
+    }
+    assert!(super::umami::is_loopback("127.0.0.1"));
+    assert!(super::umami::is_loopback("[::1]"));
+    assert!(super::umami::is_loopback("LocalHost"));
+    assert!(!super::umami::is_loopback("example.com"));
+    assert!(!super::umami::is_loopback("10.0.0.1"));
 }
 
 #[test]

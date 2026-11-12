@@ -33,7 +33,7 @@ for why the crate exists and where its boundary is.
 - `configure_telemetry` (`logs::configure_telemetry`): installs the `tracing`
   subscriber, JSON lines on stdout in `lib-observability-py`'s flat layout
   (`timestamp`, `level`, `logger`, `message`, extra fields at the top level
-  with credential-looking keys redacted, `trace_id`/`span_id` inside an
+  with credential-looking keys redacted (the shared key list, see "Redaction"), `trace_id`/`span_id` inside an
   OpenTelemetry span, `request_id` inside a request). With the `otel` feature
   and an OTLP endpoint in the environment it also exports logs, traces and
   metrics. It returns a `Telemetry`: keep it until exit and call `shutdown()`
@@ -98,16 +98,16 @@ Feature `analytics`, [ADR 0007](docs/adrs/0007-add-vendor-neutral-analytics-feat
 
 | Variable | Meaning |
 | --- | --- |
-| `ANALYTICS_ENABLED` | default true |
+| `ANALYTICS_ENABLED` | `1\|true\|yes\|on` or `0\|false\|no\|off`; default true |
 | `ANALYTICS_BACKEND` | `none` (default), `log`, `umami`, `otel` |
 | `ANALYTICS_ENDPOINT`, `ANALYTICS_SITE_ID` | Umami base URL (`/api/batch` is appended; no redirects are followed) and website ID; `umami` without both is off |
 | `ANALYTICS_HOSTNAME` | sent as `payload.hostname` |
 | `ANALYTICS_CONSENT` | `implied` (default) or `opt-in` |
-| `ANALYTICS_RESPECT_GPC` | default true |
+| `ANALYTICS_RESPECT_GPC` | same values as `ANALYTICS_ENABLED`; default true |
 | `ANALYTICS_GEO` | `none` (default) or `coarse`; no effect (events carry `ip=server`) |
 | `ANALYTICS_PROP_KEYS` | comma-separated allowlist of property keys; empty by default |
 
-An unknown value falls back to its default with a warning. Names match
+An unset or empty variable takes its default; **an unknown `ANALYTICS_ENABLED`, `_RESPECT_GPC`, `_BACKEND`, `_CONSENT` or `_GEO` is a startup error** (`Error::InvalidConfig`, fail closed: `ANALYTICS_CONSENT=optin` must not quietly become `implied`). `AnalyticsConfig::from_env()` / `from_lookup()` return `Result<AnalyticsConfig, Error>`, so call `from_env()?` at startup. The lazy read inside `analytics::track` (no `init`) cannot return an error: it logs it at error level and turns analytics off. An Umami endpoint with embedded credentials is refused and a plain `http` one to a non-loopback host logs a warning. Names match
 `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$` (at most 50 characters) or the event is
 dropped; properties are scalars on the allowlist (strings cut to 200
 characters); `url` is reduced to its path.
@@ -116,14 +116,21 @@ characters); `url` is reduced to its path.
 use craftainer_observability::analytics::{self, AnalyticsConfig, RequestContext};
 
 let telemetry = configure_telemetry()?;
-analytics::init(&AnalyticsConfig::from_env(), Some(&telemetry)); // optional
+analytics::init(&AnalyticsConfig::from_env()?, Some(&telemetry)); // optional
 // In a request, wrap the handler's future so GPC / opt-in are honoured:
-RequestContext { gpc: sec_gpc_header == Some("1"), consent: false }
+RequestContext::from_headers(request.headers())
     .scope(async { analytics::track("signup.done", &[("plan", "pro".into())], Some("/signup")) })
     .await;
 // Sync code holds the guard instead: let _g = ctx.enter();
 analytics::shutdown(); // before exit; blocking, use spawn_blocking in async code
 ```
+
+`RequestContext::from_headers(&HeaderMap)` reads `Sec-GPC: 1` and `DNT: 1`
+(either sets `gpc`) and `Analytics-Consent: 1` (sets `consent`). **Trust
+`Analytics-Consent` only from the BFF**: any client can send it, so the BFF
+must strip the client's header and set its own from the visitor's recorded
+choice, and a backend reachable without the BFF must not call `from_headers`
+on raw client requests when `ANALYTICS_CONSENT=opt-in`.
 
 The context is a thread-local set around every poll of the wrapped future: it
 does not follow into tasks or threads the handler spawns unless they are
@@ -135,6 +142,54 @@ overflow. The `log` backend writes a `tracing` event (target
 and `otel`, a `Telemetry` passed to `init`) emits a log record with the flat
 attributes `analytics_event`, `analytics_url` and `analytics_prop_<key>` on the
 same logger provider as the rest of the telemetry.
+
+## Redaction
+
+One key list (`src/redact_keys.rs`) decides which values are never exported.
+A field, span attribute or event attribute whose name contains one of these
+(any case) has its value replaced by `[REDACTED]`: `token`, `password`,
+`passwd`, `pwd`, `secret`, `authorization`, `claims`, `credential`, `api_key`,
+`apikey`, `access_key`, `cookie`, `bearer`, `jwt`, `session`, `dsn`,
+`private`, `signature` (`-` counts as `_`, so `X-Api-Key` matches). It applies to the stdout JSON lines, the OTLP log
+export and the OTLP span export (ADR 0008). On the OTLP side the message,
+string values, span and event names, a span's error status and an error's whole
+`source()` chain are also scrubbed for `key=value` pairs and `scheme://user:pw@`
+userinfo, an `Authorization`-style `Bearer`/`Basic` scheme before a value,
+`Proxy-Authorization` with any scheme and `Digest` parameters, `key=value`
+pairs inside escaped JSON, a bare `Bearer x` and a bare JWT, as the health checks' logged errors are.
+`token` is matched as a substring on purpose, so counters like `input_tokens`
+are redacted too (no allowlist). On spans, `http.url`, `url.full`, `http.target` and `url.path` lose their
+query and fragment and `url.query` is dropped. A credential in free text of
+another shape is not caught: keep secrets out of messages.
+
+## Health endpoints
+
+`/ready` is unauthenticated and probes every dependency (a query, a `PING`, a
+billable `ListBuckets`). **Mount it on an internal port**, a second listener
+the orchestrator's probes reach and the internet does not, and keep `/live`
+the only public health route if one is needed. As a second line of defence
+`HealthRegistry::run_all_cached` (what `/ready` serves) reuses a finished run
+for 1 second (`with_ready_cache_ttl`) and lets concurrent requests wait for
+the run in flight, so a client looping on `/ready` costs each dependency at
+most one probe per second. A zero TTL turns the cache and the waiting off:
+every request probes. The run is driven by the request that started it (the
+crate has no runtime handle to detach it), so if that request is dropped, for
+instance by a probe timeout shorter than a slow check, the next waiter starts
+a fresh run.
+
+## Upgrading
+
+Breaking for a minor release (0.x):
+
+- `AnalyticsConfig::from_env()` and `from_lookup()` return
+  `Result<AnalyticsConfig, Error>`; an unknown `ANALYTICS_ENABLED`,
+  `_RESPECT_GPC`, `_BACKEND`, `_CONSENT` or `_GEO` is `Error::InvalidConfig`
+  (new variant of the non-exhaustive `Error`).
+- `Error::InvalidConfig`, `RequestContext::from_headers` (a repeated
+  `Analytics-Consent` header counts only when every copy is `1`),
+  `HealthRegistry::{with_ready_cache_ttl, run_all_cached}` are new.
+- The `opentelemetry-appender-tracing` dependency is gone: the OTLP log layer
+  is the crate's own (`/ready` and redaction behave as above).
 
 ### sqlx TLS
 

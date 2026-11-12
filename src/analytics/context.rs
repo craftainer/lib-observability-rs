@@ -1,4 +1,6 @@
-//! Per-request analytics context: GPC/DNT and consent, framework-agnostic.
+//! Per-request analytics context: GPC/DNT and consent. Only `axum::http`
+//! header types are used (by [`RequestContext::from_headers`]); the scope
+//! itself is framework-agnostic.
 //!
 //! A web framework's middleware wraps each request in
 //! [`RequestContext::scope`] (an async handler) or holds a
@@ -19,6 +21,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use axum::http::HeaderMap;
 use pin_project_lite::pin_project;
 
 /// What the current request says about tracking.
@@ -55,6 +58,30 @@ impl Drop for ContextGuard {
 }
 
 impl RequestContext {
+    /// The context a request's headers describe: `gpc` when `Sec-GPC: 1` or
+    /// `DNT: 1` was sent (any of repeated headers), `consent` when
+    /// `Analytics-Consent: 1` was sent and no repeated copy says otherwise
+    /// (names are case-insensitive). Any other
+    /// value, or a header that is not UTF-8, counts as not sent.
+    ///
+    /// `Analytics-Consent` is a claim any client can make: trust it only when
+    /// the BFF in front of the service strips the client's header and sets
+    /// its own from the visitor's recorded choice. A backend reachable
+    /// without the BFF must not read it from the wire.
+    #[must_use]
+    pub fn from_headers(headers: &HeaderMap) -> Self {
+        let one = |value: &axum::http::HeaderValue| value.to_str().is_ok_and(|v| v == "1");
+        let sent = |name: &str| headers.get_all(name).iter().any(one);
+        Self {
+            gpc: sent("sec-gpc") || sent("dnt"),
+            // Repeated headers fail closed: every value must be "1".
+            consent: {
+                let mut values = headers.get_all("analytics-consent").iter().peekable();
+                values.peek().is_some() && values.all(one)
+            },
+        }
+    }
+
     /// Make `self` the context of the current thread until the guard drops.
     pub fn enter(self) -> ContextGuard {
         ContextGuard {
@@ -94,6 +121,45 @@ impl<F: Future> Future for Scoped<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_headers_set_the_context() {
+        fn of(pairs: &[(&'static str, &'static str)]) -> RequestContext {
+            let mut headers = HeaderMap::new();
+            for (name, value) in pairs {
+                headers.append(*name, value.parse().unwrap());
+            }
+            RequestContext::from_headers(&headers)
+        }
+        let ctx = |gpc, consent| RequestContext { gpc, consent };
+        assert_eq!(of(&[]), ctx(false, false));
+        assert_eq!(of(&[("sec-gpc", "1")]), ctx(true, false));
+        assert_eq!(of(&[("DNT", "1")]), ctx(true, false));
+        assert_eq!(of(&[("dnt", " 1 ")]), ctx(false, false));
+        assert_eq!(of(&[("dnt", "10")]), ctx(false, false));
+        assert_eq!(of(&[("sec-gpc", "0"), ("dnt", "0")]), ctx(false, false));
+        assert_eq!(of(&[("sec-gpc", "0"), ("sec-gpc", "1")]), ctx(true, false));
+        assert_eq!(of(&[("analytics-consent", "1")]), ctx(false, true));
+        assert_eq!(of(&[("analytics-consent", "yes")]), ctx(false, false));
+        assert_eq!(
+            of(&[("analytics-consent", "1"), ("analytics-consent", "0")]),
+            ctx(false, false)
+        );
+        assert_eq!(
+            of(&[("analytics-consent", "0"), ("analytics-consent", "1")]),
+            ctx(false, false)
+        );
+        assert_eq!(
+            of(&[("analytics-consent", "1"), ("analytics-consent", "1")]),
+            ctx(false, true)
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "sec-gpc",
+            axum::http::HeaderValue::from_bytes(b"\xff").unwrap(),
+        );
+        assert_eq!(RequestContext::from_headers(&headers), ctx(false, false));
+    }
 
     #[test]
     fn guards_nest_and_restore() {
