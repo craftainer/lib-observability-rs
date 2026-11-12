@@ -222,7 +222,7 @@ repos:
   # pre-commit manager bumps tags directly, and a SHA + "# frozen: vX"
   # comment is pre-commit.ci's convention that it doesn't maintain.
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
-    rev: v1.31.1
+    rev: v1.32.0
     hooks:
       # Offline when run locally (no token); checks.yml passes GH_TOKEN
       # through to the devcontainer so CI also runs the online audits.
