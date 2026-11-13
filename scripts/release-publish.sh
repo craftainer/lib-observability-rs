@@ -18,6 +18,13 @@
 # dist/<crate>-<version>.crate is skipped, so re-running a failed release job
 # can complete; a listed version with other contents fails.
 #
+# Credentials exist only where they are used. Everything that resolves the
+# dependency graph or could run dependency code (release-stamped.sh's cargo
+# fetch and update, cargo metadata, the re-package) runs `scrubbed`, without any
+# CI credential, and finishes before the OIDC exchange; the final
+# `cargo publish --no-verify` then keeps CARGO_REGISTRY_TOKEN and nothing else
+# (no GITHUB_TOKEN, no OIDC request variables).
+#
 # Trusted publishing is what rust-lang/crates-io-auth-action does, minus the
 # action (release.yml is base-owned): ask GitHub for an OIDC token with
 # audience crates.io, POST it to $URL/api/v1/trusted_publishing/tokens for a
@@ -33,8 +40,8 @@ endpoint="$url/api/v1/trusted_publishing/tokens"
 dry=${RELEASE_DRY_RUN:-}
 
 cd "$(dirname "$0")/.."
-# shellcheck source=scripts/release-lib.sh
-source scripts/release-lib.sh
+# shellcheck source=scripts/lib/cargo-scrub.sh
+source scripts/lib/cargo-scrub.sh
 name=$(python3 -I scripts/crate_info.py name)
 version=$(python3 -I scripts/crate_info.py version)
 package_args=()
@@ -77,26 +84,22 @@ esac
 # checked out and stamped, and that is what is uploaded. Two things keep that
 # safe:
 #  - --no-verify: cargo's verify step builds the unpacked crate, which runs
-#    dependency build.rs scripts and proc-macros, and this step holds the
-#    registry token or the OIDC request variables. The crate was verify-built
+#    dependency build.rs scripts and proc-macros. The crate was verify-built
 #    without credentials in `make build` (release-stamped.sh --scrub), so nothing
 #    here compiles dependency code.
 #  - the re-package is compared with dist/<crate>-<version>.crate (the file
 #    that was verify-built, tested, SBOM'd and attached to the release); see
-#    check_repackage.
-# The OIDC request variables are removed for cargo itself, which has no use for
-# them.
+#    check_repackage, which runs before any credential is used.
+# The final cargo call keeps CARGO_REGISTRY_TOKEN and drops the rest.
 publish() {
     # CARGO_REGISTRY_TOKEN is read by cargo from the environment, so the
     # token never appears on a command line. --allow-dirty: release-stamped.sh
     # has edited Cargo.toml and Cargo.lock.
     local args=(--locked --allow-dirty --no-verify ${package_args[@]+"${package_args[@]}"})
     if [[ -n $dry ]]; then
-        echo "[dry run] would: cargo publish ${args[*]}"
+        echo "[dry run] would: cargo publish ${args[*]} (only CARGO_REGISTRY_TOKEN kept in its environment)"
     else
-        check_repackage
-        env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
-            cargo publish "${args[@]}"
+        scrubbed --keep CARGO_REGISTRY_TOKEN cargo publish "${args[@]}"
     fi
 }
 
@@ -114,7 +117,7 @@ check_repackage() {
     fi
     scrubbed cargo package --locked --allow-dirty --no-verify \
         ${package_args[@]+"${package_args[@]}"} >/dev/null
-    again="$(python3 -I scripts/crate_info.py target-dir)/package/$name-$version.crate"
+    again="$(scrubbed python3 -I scripts/crate_info.py target-dir)/package/$name-$version.crate"
     if [[ ! -f $again ]]; then
         echo "publish: the re-packaged crate is not at $again; cannot compare it with $built" >&2
         [[ -z ${RELEASE_REPACKAGE_STRICT:-} ]] || exit 1
@@ -132,6 +135,7 @@ check_repackage() {
 
 if [[ -n ${CARGO_REGISTRY_TOKEN:-} ]]; then
     echo "publish: using the CARGO_REGISTRY_TOKEN bootstrap token"
+    [[ -n $dry ]] || check_repackage
     export CARGO_REGISTRY_TOKEN
     publish
     exit 0
@@ -150,6 +154,9 @@ MSG
 fi
 
 echo "publish: using crates.io trusted publishing (OIDC audience $audience)"
+# Before the OIDC exchange: nothing below this line runs until the re-package
+# has been checked without credentials.
+[[ -n $dry ]] || check_repackage
 if [[ -n $dry ]]; then
     echo "[dry run] would: GET \$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$audience (Bearer \$ACTIONS_ID_TOKEN_REQUEST_TOKEN)"
     echo "[dry run] would: POST $endpoint {\"jwt\": <oidc token>}"

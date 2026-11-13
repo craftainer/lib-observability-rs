@@ -184,8 +184,8 @@ class StampedRelease(unittest.TestCase):
         self.work = pathlib.Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, self.work, ignore_errors=True)
         self.repo = self.work / "repo"
-        (self.repo / "scripts").mkdir(parents=True)
-        for name in ("release-stamped.sh", "release-stamp-version.py"):
+        (self.repo / "scripts" / "lib").mkdir(parents=True)
+        for name in ("release-stamped.sh", "release-stamp-version.py", "lib/cargo-scrub.sh"):
             shutil.copy(ROOT / "scripts" / name, self.repo / "scripts" / name)
         (self.repo / "Cargo.toml").write_text('[package]\nname = "demo"\nversion = "0.0.0"\n')
         (self.repo / "Cargo.lock").write_text("# lock\n")
@@ -250,6 +250,7 @@ class CredentialIsolation(unittest.TestCase):
         self.assertIn(
             "scripts/release-stamped.sh --scrub cargo package --locked", result.stdout
         )
+        self.assertIn("scripts/lib/cargo-scrub.sh python3 -I scripts/crate_info.py target-dir", result.stdout)
 
     def test_scrub_drops_credentials_and_keeps_the_rest(self) -> None:
         secrets = {
@@ -271,7 +272,7 @@ class CredentialIsolation(unittest.TestCase):
             CARGO_REGISTRIES_PRIVATE_INDEX="sparse+https://x/",
         )
         result = subprocess.run(  # noqa: S603
-            [str(ROOT / "scripts" / "release-stamped.sh"), "--scrub", "env"],
+            [str(ROOT / "scripts" / "lib" / "cargo-scrub.sh"), "env"],
             capture_output=True,
             text=True,
             env=env,
@@ -286,10 +287,10 @@ class CredentialIsolation(unittest.TestCase):
         self.assertIn("CARGO_HOME=/x/cargo", lines)
         self.assertIn("CARGO_REGISTRIES_PRIVATE_INDEX=sparse+https://x/", lines)
 
-    def test_publish_never_verifies_and_hides_the_oidc_request_variables(self) -> None:
+    def test_publish_never_verifies_and_keeps_only_the_registry_token(self) -> None:
         text = (ROOT / "scripts" / "release-publish.sh").read_text()
         self.assertIn("--locked --allow-dirty --no-verify", text)
-        self.assertIn("env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN", text)
+        self.assertIn("scrubbed --keep CARGO_REGISTRY_TOKEN cargo publish", text)
 
 
 if __name__ == "__main__":

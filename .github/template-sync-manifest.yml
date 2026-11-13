@@ -107,6 +107,8 @@ replace:
   - scripts/test_release_contract.py
   - scripts/release-check.sh
   - scripts/release-lib.sh
+  - scripts/lib/cargo-scrub.sh
+  - scripts/test_release_scrub.py
   - scripts/release-verify-published.sh
   - scripts/release-publish.sh
   - scripts/release-stamp-version.py

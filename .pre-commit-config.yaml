@@ -211,10 +211,10 @@ repos:
 
       - id: release-contract-tests
         name: Makefile publish / publish-packages tests
-        entry: python3 -I scripts/test_release_contract.py
+        entry: bash -c 'python3 -I scripts/test_release_contract.py && python3 -I scripts/test_release_scrub.py'
         language: system
         pass_filenames: false
-        files: ^(Makefile|scripts/(release-[a-z-]+\.(sh|py)|test_release_contract\.py))$
+        files: ^(Makefile|scripts/(release-[a-z-]+\.(sh|py)|lib/cargo-scrub\.sh|test_release_(contract|scrub)\.py))$
         stages: [pre-commit, manual]
 
   # Supply-chain/secret scanners (OWASP A01/A03/A04/A08 -- see
