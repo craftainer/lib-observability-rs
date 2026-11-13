@@ -5,13 +5,13 @@
 # "Instance extension points".
 
 # renovate: datasource=github-releases depName=j178/prek
-ARG PREK_VERSION=0.5.9
+ARG PREK_VERSION=0.5.10
 
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-ARG CLAUDE_CODE_VERSION=2.1.317
+ARG CLAUDE_CODE_VERSION=2.1.319
 
 # renovate: datasource=github-releases depName=edouard-claude/snip
-ARG SNIP_VERSION=0.25.2
+ARG SNIP_VERSION=0.26.0
 
 # renovate: datasource=github-releases depName=cli/cli
 ARG GH_VERSION=2.103.3
@@ -29,13 +29,13 @@ ARG UV_VERSION=0.13.7
 # "language: python" hook (.pre-commit-config.yaml's pre-commit-hooks
 # repo), and .github/scripts/*.py need one directly.
 # renovate: datasource=python-version depName=python
-ARG PYTHON_VERSION=3.15.2
+ARG PYTHON_VERSION=3.14.8
 
 # Node.js is infrastructure tooling too, not an application runtime: npx
 # (the clear-thought MCP server in .mcp.json) is the only thing that
 # needs it.
 # renovate: datasource=node-version depName=node
-ARG NODE_VERSION=26.13.0
+ARG NODE_VERSION=24.22.2
 
 ARG SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 ARG SSL_CERT_DIR=/etc/ssl/certs
