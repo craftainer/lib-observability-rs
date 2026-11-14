@@ -38,14 +38,22 @@
   `[patch]`, source replacement and rustflags cannot apply) with the
   channel read from `rust-toolchain.toml` and passed as `RUSTUP_TOOLCHAIN`;
   `release-lib.sh` holds the `probe` helper both use; `release-publish.sh` (`make
-  publish-packages`) runs `cargo publish --no-verify` (nothing builds dependency code while it holds
-  credentials) with a bootstrap token or crates.io trusted publishing, after comparing the re-packaged crate with `dist/`'s;
+  publish-packages`) compares the re-packaged crate with `dist/`'s and then runs
+  `cargo publish --no-verify` with a bootstrap token or crates.io trusted publishing:
+  everything before it (the re-package, `cargo metadata`) runs without credentials, and
+  the publish itself keeps only `CARGO_REGISTRY_TOKEN`, so nothing that builds or
+  resolves dependencies ever holds a credential;
   `release-stamped.sh --scrub` runs its command without the CI credentials in its environment (`make build`'s `cargo package`),
   `release-stamped.sh` runs a command with `RELEASE_VERSION` stamped into
   `Cargo.toml`/`Cargo.lock` (restored afterwards) using
   `release-stamp-version.py`. It runs `cargo fetch --locked` first, because
   the stamp's `cargo update --offline` needs the locked dependencies in the
-  local registry cache, which a fresh runner lacks.
+  local registry cache, which a fresh runner lacks; both `cargo` calls run
+  scrubbed.
+- `lib/cargo-scrub.sh` — `scrubbed [--keep NAME] <command>...`, the credential
+  scrub the release scripts share (sourced, or run as
+  `scripts/lib/cargo-scrub.sh <command>...`); `test_release_scrub.py` records
+  each `cargo` call's environment with a stub `cargo`.
 - `develop.d/`, `post-create.d/` — instance hook directories, empty apart
   from their own `README.md`; see `docs/TEMPLATE.md`'s "Instance extension
   points".
@@ -59,8 +67,10 @@
   publishes checksums, matching the pattern each install step here already
   follows.
 - Run anything that compiles dependency code (`cargo package`'s verify, `cargo build`)
-  without registry or OIDC credentials in its environment; publish with
-  `--no-verify`.
+  or resolves the dependency graph (`cargo fetch`, `update`, `metadata`)
+  without registry, OIDC or `GITHUB_TOKEN` credentials in its environment
+  (`scrubbed`); publish with `--no-verify`, and give only that call
+  `CARGO_REGISTRY_TOKEN`.
 
 ## Don't
 

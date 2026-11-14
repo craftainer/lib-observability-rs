@@ -254,6 +254,13 @@ Findings from the OWASP review (A03/A08), and what each now does:
   age check, and are not automerged.
   Digest-only updates (including the Dockerfile's base image) were never
   in the automerged group.
+  Python 3.15 is held: a `packageRules` entry (`matchDepNames: ["python"]`,
+  `allowedVersions: "<3.15"`) keeps Renovate from proposing it, because uv has
+  no 3.15 build yet, pip-audit crashes on the removed `sre_constants` and
+  pydantic-core has no cp315 wheel on arm64. `.github/renovate.json` is
+  merge tier, so the rule reaches instances through template sync. Lift it
+  (delete the rule) once uv offers 3.15 builds and pip-audit and
+  pydantic-core support 3.15.
 - **Installers are verified, not run blind.** `scripts/develop.sh` no
   longer runs vendor install scripts. `uv` and `prek` are installed from
   their release tarballs, checked against the `.sha256` file published
@@ -759,7 +766,7 @@ additions.
   and restores them, then runs `cargo package --locked` and copies the
   `.crate` into `dist/`. That command verifies by building the unpacked
   crate, which runs dependency `build.rs` scripts and proc-macros, so it runs
-  under `scripts/release-stamped.sh --scrub` (`scrubbed` in `release-lib.sh`), which removes every `GITHUB_*`,
+  under `scripts/release-stamped.sh --scrub` (`scrubbed` in `lib/cargo-scrub.sh`, which also covers the stamp's `cargo fetch`/`update` and `cargo metadata`), which removes every `GITHUB_*`,
   `ACTIONS_*` and `RUNNER_*` variable and the registry tokens (the build job
   holds `GITHUB_TOKEN` with `contents`/`packages: write` and the Actions
   runtime token, which the build does not need). `make sbom` runs Syft over the unpacked crate

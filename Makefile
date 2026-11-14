@@ -36,14 +36,15 @@ release-arches:
 # Verifying builds dependency build.rs scripts and proc-macros, so it runs
 # under `release-stamped.sh --scrub`: release.yml's build job holds GITHUB_TOKEN
 # (contents/packages: write) and the Actions runtime token, which dependency
-# code must not see.
+# code must not see. The stamp's cargo fetch/update and the `cargo metadata`
+# behind target-dir are scrubbed too (scripts/lib/cargo-scrub.sh).
 build:
 	$(REQUIRE_CRATE)
 	@if command -v rustup >/dev/null 2>&1; then rustup toolchain install --profile minimal --no-self-update; fi
 	rm -rf dist
 	mkdir -p dist
 	scripts/release-stamped.sh --scrub cargo package --locked --allow-dirty $(if $(CARGO_PACKAGE),-p $(CARGO_PACKAGE))
-	@set -e; target=$$($(CRATE_INFO) target-dir); \
+	@set -e; target=$$(scripts/lib/cargo-scrub.sh $(CRATE_INFO) target-dir); \
 	cp "$$target/package/$(CRATE)-$(VERSION).crate" "$(ASSET).crate"
 
 # Syft over the unpacked crate: its Cargo.toml and Cargo.lock list the
@@ -74,8 +75,10 @@ publish:
 # dist/ (the build leg's .crate), with the runner's own rustup/cargo, so the
 # pinned toolchain is installed first, as in `build`. Credentials and the
 # dry-run switch: scripts/release-publish.sh, which checks dist/'s .crate
-# against the index and then runs `cargo publish --no-verify` (the crate was
-# verify-built, credential-free, in `build`; no dependency code runs here).
+# against the index, re-packages and compares it without credentials, and
+# only then runs `cargo publish --no-verify` with nothing but the registry
+# token (the crate was verify-built, credential-free, in `build`; no
+# dependency code runs here).
 publish-packages:
 ifeq ($(CARGO_PUBLISH),)
 	@echo "::warning::CARGO_PUBLISH is not set -- the crate was NOT published to crates.io."
