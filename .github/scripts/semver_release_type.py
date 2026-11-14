@@ -3,9 +3,10 @@
 
 Prints one line for ``$GITHUB_ENV``: ``SEMVER_RELEASE_TYPE=major`` when the
 change is marked breaking with the Conventional Commits ``!`` marker (for
-example ``feat(bulk)!: ...`` or ``fix!: ...``), else ``SEMVER_RELEASE_TYPE=``
-(empty, so the ``cargo-semver-checks`` hook falls back to its ``minor``
-default).
+example ``feat(bulk)!: ...`` or ``fix!: ...``), else nothing at all (so the
+variable stays unset and the ``cargo-semver-checks`` hook falls back to its
+``minor`` default; ``checks.yml`` accepts only empty output or exactly
+``SEMVER_RELEASE_TYPE=<lowercase word>``).
 
 Which text is judged depends on the event: a ``pull_request`` uses the PR
 title, a ``push`` to ``main`` uses the subject line of the head commit (a
@@ -50,7 +51,8 @@ def main() -> int:
         env.get("PR_TITLE", ""),
         env.get("COMMIT_MESSAGE", ""),
     )
-    print(f"SEMVER_RELEASE_TYPE={value}")
+    if value:
+        print(f"SEMVER_RELEASE_TYPE={value}")
     return 0
 
 

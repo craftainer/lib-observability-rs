@@ -62,7 +62,7 @@ class ReleaseTypeTests(unittest.TestCase):
             contextlib.redirect_stdout(io.StringIO()) as out,
         ):
             srt.main()
-        self.assertEqual(out.getvalue(), "SEMVER_RELEASE_TYPE=\n")
+        self.assertEqual(out.getvalue(), "")
 
 
 if __name__ == "__main__":
